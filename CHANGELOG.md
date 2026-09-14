@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1 - 2026-09-14
+
+- Teach agents when to use Teleport instead of changing directories in a shell.
+- Add trusted npm publishing through GitHub Actions and OIDC.
+
 ## 0.1.0 - 2026-09-14
 
 - Add persisted session jumps, back navigation, and history.
