@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.5 - 2026-09-14
+
+- Use PNG for the Pi gallery preview so the gallery can render it reliably.
+
 ## 0.1.4 - 2026-09-14
 
 - Keep the transparent logo at its stable URL while reducing it to about 60 KB.
