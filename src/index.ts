@@ -58,10 +58,11 @@ export default function teleport(pi: ExtensionAPI) {
   const notify = (ctx: ExtensionCommandContext, text: string, level: "info" | "error" = "info") => ctx.ui.notify(text, level);
 
   async function jump(ctx: ExtensionCommandContext, rawTarget: string) {
+    const sourceCwd = ctx.cwd;
     const target = resolve(ctx.cwd, rawTarget);
     const { source, destination } = serialize(ctx, target);
     let state = readState(dir);
-    state.transition = { id: randomUUID(), phase: "prepared", from: ctx.cwd, to: target, sourceSession: source, destinationSession: destination, startedAt: Date.now() };
+    state.transition = { id: randomUUID(), phase: "prepared", from: sourceCwd, to: target, sourceSession: source, destinationSession: destination, startedAt: Date.now() };
     writeState(dir, state);
 
     if (process.env.HERDR_ENV === "1" && process.env.HERDR_TAB_ID && process.env.HERDR_WORKSPACE_ID) {
@@ -70,11 +71,12 @@ export default function teleport(pi: ExtensionAPI) {
       const tab = created?.result?.tab?.tab_id ?? created?.result?.root_pane?.tab_id;
       if (!pane || !tab) throw new Error("Herdr did not return a destination pane and tab.");
       try {
-        herdr(["pane", "run", pane, `pi --session ${quote(destination)}`]);
+        const continuation = `Agent teleported: ${sourceCwd} → ${target}. Continue the original task from the destination. Do not repeat the teleport request.`;
+        herdr(["pane", "run", pane, `pi --session ${quote(destination)} ${quote(continuation)}`]);
         await waitForDestination(pane, destination);
         state = readState(dir);
         state.active = { cwd: target, sessionFile: destination };
-        state.history.push({ from: ctx.cwd, to: target, at: Date.now(), status: "completed" });
+        state.history.push({ from: sourceCwd, to: target, at: Date.now(), status: "completed" });
         delete state.transition;
         writeState(dir, state);
         await scheduleSourceCleanup(pi, source, process.env.HERDR_TAB_ID);
@@ -94,11 +96,12 @@ export default function teleport(pi: ExtensionAPI) {
       started = true;
       const current = readState(dir);
       current.active = { cwd: target, sessionFile: destination };
-      current.history.push({ from: ctx.cwd, to: target, at: Date.now(), status: "completed" });
+      current.history.push({ from: sourceCwd, to: target, at: Date.now(), status: "completed" });
       delete current.transition;
       writeState(dir, current);
       rmSync(source, { force: true });
-      next.ui.notify(`Teleported to ${target}`, "info");
+      next.ui.notify(`✦ Agent teleported: ${sourceCwd} → ${target}`, "info");
+      await next.sendUserMessage(`Agent teleported: ${sourceCwd} → ${target}. Continue the original task from the destination. Do not repeat the teleport request.`);
     }});
     if (result.cancelled || !started) { rmSync(destination, { force: true }); state = readState(dir); delete state.transition; writeState(dir, state); throw new Error("Teleport was cancelled."); }
   }
@@ -160,7 +163,7 @@ export default function teleport(pi: ExtensionAPI) {
       pending.set(token, { action: params.action, target: params.target });
       pi.sendUserMessage(`/__teleport_internal ${token}`, { deliverAs: "followUp", expandPromptTemplates: true });
       return {
-        content: [{ type: "text" as const, text: params.action === "jump" ? `Queued teleport to ${params.target}.` : "Queued teleport to the previous location." }],
+        content: [{ type: "text" as const, text: params.action === "jump" ? `✦ Agent teleport queued: ${ctx.cwd} → ${resolve(ctx.cwd, params.target!)}` : `✦ Agent teleport queued: ${ctx.cwd} → previous location` }],
         details: { action: params.action, target: params.target },
         terminate: true,
       };
