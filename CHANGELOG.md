@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2 - 2026-09-14
+
+- Add Pi package gallery metadata and use the portal logo as its preview image.
+
 ## 0.1.1 - 2026-09-14
 
 - Teach agents when to use Teleport instead of changing directories in a shell.
