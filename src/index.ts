@@ -180,7 +180,7 @@ export default function teleport(pi: ExtensionAPI) {
         const target = resolve(context.cwd, args.target);
         const completed = readState(dir).history.findLast((entry) => resolve(entry.to) === target);
         const source = resolve(context.cwd) === target && completed ? completed.from : context.cwd;
-        component.setText(`${title}\n  ${theme.fg("muted", source)}\n  ${theme.fg("accent", "└─→")} ${theme.fg("success", target)}`);
+        component.setText(`${title}\n  ${theme.fg("accent", source)}\n  ${theme.fg("muted", "└─→")} ${theme.fg("warning", target)}`);
       } else if (args.action === "back") {
         component.setText(`${title} ${theme.fg("accent", "←")} ${theme.fg("muted", "previous location")}`);
       } else if (args.action === "create") {
@@ -196,7 +196,13 @@ export default function teleport(pi: ExtensionAPI) {
       if (options.isPartial) return new Text(theme.fg("warning", "  ◌ preparing destination…"), 0, 0);
       const text = result.content?.find((item) => item.type === "text")?.text ?? "";
       if (!text) return new Text("", 0, 0);
-      const details = result.details as { action?: string } | undefined;
+      const details = result.details as { action?: string; history?: Array<{ from: string; to: string }> } | undefined;
+      if (details?.history) {
+        const routes = details.history.map((entry) =>
+          `  ${theme.fg("accent", entry.from)} ${theme.fg("muted", "→")} ${theme.fg("warning", entry.to)}`
+        );
+        return new Text(routes.length ? routes.join("\n") : theme.fg("muted", "  No teleport history."), 0, 0);
+      }
       const prefix = details?.action === "jump" || details?.action === "back"
         ? theme.fg("success", "  ✓ handoff prepared")
         : theme.fg("success", "  ✓");
