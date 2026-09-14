@@ -5,7 +5,7 @@
   "type": "module",
   "license": "MIT",
   "author": "Alex Shpunt",
-  "files": ["src", "README.md", "LICENSE", "CHANGELOG.md"],
+  "files": ["src", "assets", "README.md", "LICENSE", "CHANGELOG.md"],
   "pi": { "extensions": ["./src/index.ts"] },
   "scripts": {
     "test": "vitest run src",
