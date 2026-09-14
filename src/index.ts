@@ -139,7 +139,11 @@ export default function teleport(pi: ExtensionAPI) {
   pi.registerTool({
     name: "teleport",
     label: "Teleport",
-    description: "Move this persisted Pi session, manage Teleport-owned worktrees, or inspect movement history.",
+    description: [
+      "Move this persisted Pi session between directories, repositories, and isolated Git worktrees.",
+      "Use Teleport whenever work needs to continue from another folder or repository; use create followed by jump when a feature or fix should be isolated in its own worktree.",
+      "Use back to return, then remove to safely clean up a Teleport-owned worktree. Prefer this tool over shell cd because Teleport moves the active session and preserves its navigation history.",
+    ].join(" "),
     parameters: Type.Object({
       action: StringEnum(["jump", "back", "history", "create", "remove"] as const),
       target: Type.Optional(Type.String()),
