@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/agent-portal.webp" alt="Pi Agent Teleport" width="760">
+  <img src="assets/agent-portal.png" alt="Pi Agent Teleport" width="760">
 </p>
 
 <h1 align="center">Pi Agent Teleport</h1>

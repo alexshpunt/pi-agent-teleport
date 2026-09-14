@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4 - 2026-09-14
+
+- Keep the transparent logo at its stable URL while reducing it to about 60 KB.
+- Keep the separate 16:9 Pi gallery preview at about 37 KB.
+
 ## 0.1.3 - 2026-09-14
 
 - Add a compact 16:9 Pi gallery image on a matching dark background.

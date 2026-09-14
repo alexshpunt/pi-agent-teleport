@@ -1,6 +1,6 @@
 {
   "name": "pi-agent-teleport",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Give your agent a teleportation gun: move one Pi session between directories and managed Git worktrees",
   "keywords": [
     "pi-package"
