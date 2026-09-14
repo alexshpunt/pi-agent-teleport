@@ -30,6 +30,21 @@ describe("managed worktrees", () => {
     expect(() => removeManagedWorktree({ repo: root, id: "missing", stateDir })).toThrow(/owned/);
   });
 
+  test("startup reconciliation keeps the source for a merely prepared destination", () => {
+    const root = repo();
+    const stateDir = join(root, ".state-prepared");
+    const sourceSession = join(root, "source.jsonl");
+    const destinationSession = join(root, "destination.jsonl");
+    writeFileSync(sourceSession, "source");
+    writeFileSync(destinationSession, "destination");
+    writeState(stateDir, { version: 1, history: [], resources: {}, transition: { id: "prepared", phase: "prepared", from: root, to: join(root, "next"), sourceSession, destinationSession, startedAt: 1 } });
+
+    const state = reconcileState(stateDir);
+
+    expect(state.active).toEqual({ cwd: root, sessionFile: sourceSession });
+    expect(state.transition).toBeUndefined();
+  });
+
   test("startup reconciliation records an interrupted move without inventing an active session", () => {
     const root = repo();
     const stateDir = join(root, ".state");
