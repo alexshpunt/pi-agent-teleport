@@ -177,8 +177,9 @@ export default function teleport(pi: ExtensionAPI) {
       const component = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
       const title = theme.fg("toolTitle", theme.bold("✦ Agent teleport"));
       if (args.action === "jump" && args.target) {
-        const source = context.cwd;
-        const target = resolve(source, args.target);
+        const target = resolve(context.cwd, args.target);
+        const completed = readState(dir).history.findLast((entry) => resolve(entry.to) === target);
+        const source = resolve(context.cwd) === target && completed ? completed.from : context.cwd;
         component.setText(`${title}\n  ${theme.fg("muted", source)}\n  ${theme.fg("accent", "└─→")} ${theme.fg("success", target)}`);
       } else if (args.action === "back") {
         component.setText(`${title} ${theme.fg("accent", "←")} ${theme.fg("muted", "previous location")}`);
