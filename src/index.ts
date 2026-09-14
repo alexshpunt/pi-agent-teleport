@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { SessionManager, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
+import { Text } from "@earendil-works/pi-tui";
 
 
 import { createManagedWorktree, readState, reconcileState, removeManagedWorktree, writeState } from "./core.ts";
@@ -171,6 +172,34 @@ export default function teleport(pi: ExtensionAPI) {
         details: { action: params.action, target: params.target },
         terminate: true,
       };
+    },
+    renderCall(args, theme, context) {
+      const component = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      const title = theme.fg("toolTitle", theme.bold("✦ Agent teleport"));
+      if (args.action === "jump" && args.target) {
+        const source = context.cwd;
+        const target = resolve(source, args.target);
+        component.setText(`${title}\n  ${theme.fg("muted", source)}\n  ${theme.fg("accent", "└─→")} ${theme.fg("success", target)}`);
+      } else if (args.action === "back") {
+        component.setText(`${title} ${theme.fg("accent", "←")} ${theme.fg("muted", "previous location")}`);
+      } else if (args.action === "create") {
+        component.setText(`${title} ${theme.fg("accent", "+ worktree")} ${theme.fg("muted", args.branch ?? "branch required")}`);
+      } else if (args.action === "remove") {
+        component.setText(`${title} ${theme.fg("warning", "− worktree")} ${theme.fg("muted", args.resourceId ?? "resource required")}`);
+      } else {
+        component.setText(`${title} ${theme.fg("muted", "history")}`);
+      }
+      return component;
+    },
+    renderResult(result, options, theme) {
+      if (options.isPartial) return new Text(theme.fg("warning", "  ◌ preparing destination…"), 0, 0);
+      const text = result.content?.find((item) => item.type === "text")?.text ?? "";
+      if (!text) return new Text("", 0, 0);
+      const details = result.details as { action?: string } | undefined;
+      const prefix = details?.action === "jump" || details?.action === "back"
+        ? theme.fg("success", "  ✓ handoff prepared")
+        : theme.fg("success", "  ✓");
+      return new Text(`${prefix} ${theme.fg("toolOutput", text)}`, 0, 0);
     },
   });
   pi.on("session_start", (_event, ctx) => {
