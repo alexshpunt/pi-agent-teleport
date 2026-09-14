@@ -1,3 +1,5 @@
+![Pi Agent Teleport](assets/agent-portal.png)
+
 # Pi Agent Teleport 🌀
 
 Give your agent a teleportation gun.
