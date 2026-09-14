@@ -71,8 +71,8 @@ export default function teleport(pi: ExtensionAPI) {
       const tab = created?.result?.tab?.tab_id ?? created?.result?.root_pane?.tab_id;
       if (!pane || !tab) throw new Error("Herdr did not return a destination pane and tab.");
       try {
-        const continuation = `Agent teleported: ${sourceCwd} → ${target}. Continue the original task from the destination. Do not repeat the teleport request.`;
-        herdr(["pane", "run", pane, `pi --session ${quote(destination)} ${quote(continuation)}`]);
+        const continuation = Buffer.from(`Agent teleported: ${sourceCwd} → ${target}. Continue the original task from the destination. Do not repeat the teleport request.`, "utf8").toString("base64url");
+        herdr(["pane", "run", pane, `PI_TELEPORT_CONTINUATION=${quote(continuation)} pi --session ${quote(destination)}`]);
         await waitForDestination(pane, destination);
         state = readState(dir);
         state.active = { cwd: target, sessionFile: destination };
@@ -101,7 +101,11 @@ export default function teleport(pi: ExtensionAPI) {
       writeState(dir, current);
       rmSync(source, { force: true });
       next.ui.notify(`✦ Agent teleported: ${sourceCwd} → ${target}`, "info");
-      await next.sendUserMessage(`Agent teleported: ${sourceCwd} → ${target}. Continue the original task from the destination. Do not repeat the teleport request.`);
+      await next.sendMessage({
+        customType: "pi-agent-teleport-continuation",
+        content: `Agent teleported: ${sourceCwd} → ${target}. Continue the original task from the destination. Do not repeat the teleport request.`,
+        display: false,
+      }, { triggerTurn: true });
     }});
     if (result.cancelled || !started) { rmSync(destination, { force: true }); state = readState(dir); delete state.transition; writeState(dir, state); throw new Error("Teleport was cancelled."); }
   }
@@ -169,5 +173,23 @@ export default function teleport(pi: ExtensionAPI) {
       };
     },
   });
-  pi.on("session_start", (_event, ctx) => { sessionId = ctx.sessionManager.getSessionId(); dir = dataDir(sessionId); const state = reconcileState(dir); const file = ctx.sessionManager.getSessionFile(); if (file) { state.active = { cwd: ctx.cwd, sessionFile: file }; writeState(dir, state); } });
+  pi.on("session_start", (_event, ctx) => {
+    sessionId = ctx.sessionManager.getSessionId();
+    dir = dataDir(sessionId);
+    const state = reconcileState(dir);
+    const file = ctx.sessionManager.getSessionFile();
+    if (file) {
+      state.active = { cwd: ctx.cwd, sessionFile: file };
+      writeState(dir, state);
+    }
+    const encodedContinuation = process.env.PI_TELEPORT_CONTINUATION;
+    if (encodedContinuation) {
+      delete process.env.PI_TELEPORT_CONTINUATION;
+      pi.sendMessage({
+        customType: "pi-agent-teleport-continuation",
+        content: Buffer.from(encodedContinuation, "base64url").toString("utf8"),
+        display: false,
+      }, { triggerTurn: true });
+    }
+  });
 }
