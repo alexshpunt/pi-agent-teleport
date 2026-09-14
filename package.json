@@ -1,5 +1,5 @@
 {
-  "name": "@alexshp/pi-agent-teleport",
+  "name": "@alexshpunt/pi-agent-teleport",
   "version": "0.1.0",
   "description": "Give your agent a teleportation gun: move one Pi session between directories and managed Git worktrees",
   "type": "module",
