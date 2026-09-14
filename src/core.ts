@@ -36,7 +36,13 @@ export function reconcileState(dir: string): TeleportState {
     const t = state.transition;
     const destinationExists = existsSync(t.destinationSession);
     const sourceExists = existsSync(t.sourceSession);
-    state.active = destinationExists ? { cwd: t.to, sessionFile: t.destinationSession } : sourceExists ? { cwd: t.from, sessionFile: t.sourceSession } : undefined;
+    state.active = t.phase === "destination-started" && destinationExists
+      ? { cwd: t.to, sessionFile: t.destinationSession }
+      : sourceExists
+        ? { cwd: t.from, sessionFile: t.sourceSession }
+        : destinationExists
+          ? { cwd: t.to, sessionFile: t.destinationSession }
+          : undefined;
     state.history.push({ from: t.from, to: state.active?.cwd ?? t.to, at: Date.now(), status: "reconciled" });
     delete state.transition;
   }

@@ -35,6 +35,20 @@ async function waitForDestination(pane: string, session: string): Promise<void> 
   }
   throw new Error("Timed out confirming the destination Pi process.");
 }
+async function scheduleSourceCleanup(pi: ExtensionAPI, sessionFile: string, tabId: string): Promise<void> {
+  const cleanup = [
+    `old_pid=${process.pid}`,
+    `old_session=${quote(sessionFile)}`,
+    `old_tab=${quote(tabId)}`,
+    'i=0',
+    'while kill -0 "$old_pid" 2>/dev/null && [ "$i" -lt 600 ]; do i=$((i + 1)); sleep 0.1; done',
+    'rm -f -- "$old_session"',
+    'herdr tab close "$old_tab" >/dev/null 2>&1 || true',
+  ].join('; ');
+  const launcher = `if command -v setsid >/dev/null 2>&1; then setsid sh -c ${quote(cleanup)} >/dev/null 2>&1 < /dev/null & else nohup sh -c ${quote(cleanup)} >/dev/null 2>&1 < /dev/null & fi`;
+  const result = await pi.exec('sh', ['-lc', launcher], { timeout: 5_000 });
+  if (result.code !== 0) throw new Error(result.stderr || result.stdout || 'Failed to schedule source cleanup.');
+}
 
 export default function teleport(pi: ExtensionAPI) {
   let sessionId = "unknown";
@@ -61,9 +75,8 @@ export default function teleport(pi: ExtensionAPI) {
         state.history.push({ from: ctx.cwd, to: target, at: Date.now(), status: "completed" });
         delete state.transition;
         writeState(dir, state);
-        rmSync(source, { force: true });
+        await scheduleSourceCleanup(pi, source, process.env.HERDR_TAB_ID);
         herdr(["workspace", "focus", process.env.HERDR_WORKSPACE_ID]);
-        herdr(["tab", "close", process.env.HERDR_TAB_ID]);
         ctx.shutdown();
       } catch (error) {
         try { herdr(["tab", "close", tab]); } catch {}
