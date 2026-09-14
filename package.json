@@ -5,6 +5,18 @@
   "type": "module",
   "license": "MIT",
   "author": "Alex Shpunt",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexshpunt/pi-agent-teleport.git"
+  },
+  "homepage": "https://github.com/alexshpunt/pi-agent-teleport#readme",
+  "bugs": {
+    "url": "https://github.com/alexshpunt/pi-agent-teleport/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "files": ["src", "assets", "README.md", "LICENSE", "CHANGELOG.md"],
   "pi": { "extensions": ["./src/index.ts"] },
   "scripts": {
