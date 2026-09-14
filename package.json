@@ -1,7 +1,7 @@
 {
   "name": "@alexshp/pi-agent-teleport",
   "version": "0.1.0",
-  "description": "Move one Pi session between directories and managed Git worktrees",
+  "description": "Give your agent a teleportation gun: move one Pi session between directories and managed Git worktrees",
   "type": "module",
   "license": "MIT",
   "author": "Alex Shpunt",

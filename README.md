@@ -1,6 +1,20 @@
-# Pi Agent Teleport
+# Pi Agent Teleport 🌀
 
-A Pi extension that moves one persisted session between directories without leaving duplicate session files behind.
+Give your agent a teleportation gun.
+
+Pi normally lives in the directory where you started it. Teleport lets the agent move
+the running session to another directory, another repository, or a fresh Git worktree —
+and jump back when the job is done. The conversation continues, the session stays the
+same, and no duplicate session files are left behind.
+
+```text
+✦ Agent teleport
+  /root/dev/pi/pi-worktrunk                ← from (blue)
+  └─→ /root/dev/pi/pi-agent-teleport       ← to (orange)
+```
+
+The agent keeps working after the move. You see one compact route row, not a new user
+message.
 
 ## Install
 
@@ -8,31 +22,86 @@ A Pi extension that moves one persisted session between directories without leav
 pi install npm:@alexshp/pi-agent-teleport
 ```
 
-## Agent tool
+## What it gives the agent
 
-Teleport exposes only the `teleport` tool. It does not provide user-facing slash commands.
+Teleport exposes a single `teleport` tool. There are no user-facing slash commands.
 
-Actions:
+| Action    | Purpose |
+|-----------|---------|
+| `jump`    | Move the session to an existing directory. |
+| `back`    | Move the session to the previous location. |
+| `history` | List completed moves. |
+| `create`  | Create a linked Git worktree owned by Teleport. |
+| `remove`  | Remove a clean worktree recorded as Teleport-owned. |
 
-- `jump` moves the active session to an existing directory.
-- `back` moves it to the previous directory.
-- `history` lists completed moves.
-- `create` creates a linked Git worktree owned by Teleport.
-- `remove` removes a clean worktree recorded as Teleport-owned.
+Typical flow:
 
-Pi currently exposes session replacement only to command contexts. Teleport therefore uses a private one-shot command internally for `jump` and `back`; it is transport plumbing, not a supported user API. Worktrunk is not required at runtime.
+```text
+create worktree → jump into it → do the work → back → remove the worktree
+```
 
-## Safety model
+## How a move works
 
-State is stored under `$PI_CODING_AGENT_DIR/teleport/<session-id>/state.json`. It has a version, one active session, movement history, owned resource manifests, and an in-flight transition. Startup reconciliation chooses only a session file that actually exists and clears interrupted transitions.
+1. Teleport writes a `prepared` transition to durable state.
+2. It builds the destination session: same session id, updated `cwd`, full conversation.
+3. It switches Pi to the destination session.
+4. Only then it removes the source session file.
+5. A hidden continuation starts the next agent turn inside the destination context.
 
-A successful in-process move creates the destination session, switches Pi, then deletes the source file. Under Herdr, Teleport creates a destination tab, starts Pi with the destination session, confirms that exact process and session, commits state, removes the source session, then closes the source tab. If confirmation fails, it closes only the new tab and retains the source.
+If step 3 is cancelled or fails, Teleport removes the prepared destination and keeps the
+source untouched.
 
-Worktree removal requires a matching Teleport ownership record, matching Git common directory, and a clean worktree. Teleport never removes an unrecorded resource and has no force option.
+Under Herdr, the replacement is stronger. Teleport creates a destination tab, starts Pi
+with the destination session, waits until Herdr reports that exact process and session,
+commits the state, schedules the source session removal, and closes the source tab. If
+confirmation fails, it closes only the new tab and keeps the source.
+
+## Managed worktrees
+
+`create` registers ownership before it creates anything. `remove` requires all of these:
+
+- a matching Teleport ownership record,
+- a matching Git common directory,
+- a clean worktree.
+
+Teleport never deletes an unrecorded resource, and it has no force option. A branch that
+is fully merged into its base is deleted with the worktree; an unmerged branch is kept.
+
+## State and recovery
+
+State lives in `$PI_CODING_AGENT_DIR/teleport/<session-id>/state.json`. It holds a version,
+the active session, movement history, owned resources, and any in-flight transition.
+
+On session start Teleport reconciles that state:
+
+- a `prepared` transition keeps the source, even when the destination file already exists;
+- a confirmed destination becomes the active session;
+- transitions are cleared, and a missing active session or resource is dropped.
+
+## Requirements
+
+- Pi 0.80 or newer.
+- Node.js 22 or newer.
+- Herdr replacement needs `HERDR_ENV`, `HERDR_TAB_ID`, and `HERDR_WORKSPACE_ID` plus the
+  public `herdr` CLI. Without Herdr, Teleport uses in-process session switching.
 
 ## Limitations
 
-- Herdr replacement requires `HERDR_ENV`, `HERDR_TAB_ID`, and `HERDR_WORKSPACE_ID`, plus the public `herdr` CLI.
-- Teleport cannot transfer in-memory extension state; extensions must restore state from Pi session entries or disk.
-- The optional Worktrunk adapter only resolves existing worktrees. It does not create or remove them.
+- Teleport cannot carry in-memory extension state. Extensions must restore state from Pi
+  session entries or from disk.
+- Pi exposes session replacement only to command contexts, so `jump` and `back` use a
+  private one-shot command as transport. It is plumbing, not a supported user API.
 - Dirty managed worktrees must be cleaned manually before removal.
+- A worktree is checkout isolation, not a security sandbox.
+
+## Development
+
+```bash
+npm test            # unit tests
+npm run typecheck   # TypeScript check
+npm run test:integration  # real Pi process test
+```
+
+## License
+
+MIT
