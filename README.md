@@ -7,10 +7,10 @@
 <p align="center">Give your agent a teleportation gun.</p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/@alexshpunt/pi-agent-teleport"><img src="https://img.shields.io/npm/v/@alexshpunt/pi-agent-teleport" alt="npm version"></a>
-  <a href="https://www.npmjs.com/package/@alexshpunt/pi-agent-teleport"><img src="https://img.shields.io/npm/dm/@alexshpunt/pi-agent-teleport" alt="npm downloads"></a>
+  <a href="https://www.npmjs.com/package/pi-agent-teleport"><img src="https://img.shields.io/npm/v/pi-agent-teleport" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/pi-agent-teleport"><img src="https://img.shields.io/npm/dm/pi-agent-teleport" alt="npm downloads"></a>
   <a href="https://github.com/alexshpunt/pi-agent-teleport/actions/workflows/ci.yml"><img src="https://github.com/alexshpunt/pi-agent-teleport/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/npm/l/@alexshpunt/pi-agent-teleport" alt="MIT license"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/npm/l/pi-agent-teleport" alt="MIT license"></a>
 </p>
 
 Pi normally lives in the directory where you started it. Teleport lets the agent move
@@ -30,7 +30,7 @@ message.
 ## Install
 
 ```bash
-pi install npm:@alexshpunt/pi-agent-teleport
+pi install npm:pi-agent-teleport
 ```
 
 ## What it gives the agent
