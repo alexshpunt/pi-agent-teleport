@@ -1,8 +1,17 @@
-![Pi Agent Teleport](assets/agent-portal.png)
+<p align="center">
+  <img src="assets/agent-portal.png" alt="Pi Agent Teleport" width="760">
+</p>
 
-# Pi Agent Teleport 🌀
+<h1 align="center">Pi Agent Teleport</h1>
 
-Give your agent a teleportation gun.
+<p align="center">Give your agent a teleportation gun.</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/@alexshp/pi-agent-teleport"><img src="https://img.shields.io/npm/v/@alexshp/pi-agent-teleport" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/@alexshp/pi-agent-teleport"><img src="https://img.shields.io/npm/dm/@alexshp/pi-agent-teleport" alt="npm downloads"></a>
+  <a href="https://github.com/alexshpunt/pi-agent-teleport/actions/workflows/ci.yml"><img src="https://github.com/alexshpunt/pi-agent-teleport/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/npm/l/@alexshp/pi-agent-teleport" alt="MIT license"></a>
+</p>
 
 Pi normally lives in the directory where you started it. Teleport lets the agent move
 the running session to another directory, another repository, or a fresh Git worktree —
