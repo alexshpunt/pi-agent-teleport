@@ -24,7 +24,10 @@ function serialize(ctx: ExtensionCommandContext, target: string): { source: stri
   return { source, destination };
 }
 function quote(value: string): string { return `'${value.replaceAll("'", `'\\''`)}'`; }
-function herdr(args: string[]): any { return JSON.parse(execFileSync("herdr", args, { encoding: "utf8" })); }
+function herdr(args: string[]): any {
+  const output = execFileSync("herdr", args, { encoding: "utf8" }).trim();
+  return output ? JSON.parse(output) : {};
+}
 async function waitForDestination(pane: string, session: string): Promise<void> {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
