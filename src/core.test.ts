@@ -24,6 +24,7 @@ describe("managed worktrees", () => {
     expect(readState(stateDir).resources[managed.id]?.path).toBe(managed.path);
     removeManagedWorktree({ repo: root, id: managed.id, stateDir });
     expect(readState(stateDir).resources[managed.id]).toBeUndefined();
+    expect(() => execFileSync("git", ["show-ref", "--verify", `refs/heads/${managed.branch}`], { cwd: root })).toThrow();
 
     const foreign = join(root, "foreign");
     execFileSync("git", ["worktree", "add", "-b", "foreign", foreign], { cwd: root });

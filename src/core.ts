@@ -85,6 +85,7 @@ export function removeManagedWorktree(input: { repo: string; id: string; stateDi
   if (common !== expected) throw new Error("The worktree no longer belongs to the recorded repository.");
   if (git(resource.path, ["status", "--porcelain"])) throw new Error("Refusing to remove a dirty managed worktree.");
   git(resource.repo, ["worktree", "remove", resource.path]);
+  try { git(resource.repo, ["branch", "-d", resource.branch]); } catch { /* Preserve unmerged branches. */ }
   delete state.resources[input.id];
   writeState(input.stateDir, state);
 }
