@@ -9,7 +9,6 @@ import { Type } from "typebox";
 
 
 import { createManagedWorktree, readState, reconcileState, removeManagedWorktree, writeState } from "./core.ts";
-import { resolveWorktrunkTarget } from "./worktrunk.ts";
 
 function dataDir(sessionId: string): string { return join(process.env.PI_CODING_AGENT_DIR ?? join(process.env.HOME ?? homedir(), ".pi", "agent"), "teleport", sessionId); }
 function serialize(ctx: ExtensionCommandContext, target: string): { source: string; destination: string } {
@@ -101,19 +100,68 @@ export default function teleport(pi: ExtensionAPI) {
     if (result.cancelled || !started) { rmSync(destination, { force: true }); state = readState(dir); delete state.transition; writeState(dir, state); throw new Error("Teleport was cancelled."); }
   }
 
-  pi.registerCommand("teleport", { description: "Jump to an existing directory", async handler(args, ctx) { try { if (!args.trim()) throw new Error("Usage: /teleport <directory>"); await jump(ctx, args.trim()); } catch (e) { notify(ctx, e instanceof Error ? e.message : String(e), "error"); } } });
-  pi.registerCommand("teleport-wt", { description: "Jump to an existing Worktrunk worktree", async handler(args, ctx) { try { if (!args.trim()) throw new Error("Usage: /teleport-wt <branch-or-path>"); await jump(ctx, resolveWorktrunkTarget(ctx.cwd, args.trim())); } catch (e) { notify(ctx, e instanceof Error ? e.message : String(e), "error"); } } });
-  pi.registerCommand("teleport-back", { description: "Jump to the previous directory", async handler(_args, ctx) { try { const previous = readState(dir).history.at(-1)?.from; if (!previous) throw new Error("Teleport history is empty."); await jump(ctx, previous); } catch (e) { notify(ctx, e instanceof Error ? e.message : String(e), "error"); } } });
-  pi.registerCommand("teleport-history", { description: "Show teleport history", async handler(_args, ctx) { const history = readState(dir).history; notify(ctx, history.length ? history.map((h, i) => `${i + 1}. ${h.from} → ${h.to}`).join("\n") : "Teleport history is empty."); } });
-  pi.registerCommand("teleport-create", { description: "Create a Teleport-owned Git worktree", async handler(args, ctx) { try { const [branch, base = "HEAD", path] = args.trim().split(/\s+/); if (!branch) throw new Error("Usage: /teleport-create <branch> [base] [path]"); const resource = createManagedWorktree({ repo: ctx.cwd, branch, base, path, stateDir: dir }); notify(ctx, `Created ${resource.path}\nResource: ${resource.id}`); } catch (e) { notify(ctx, e instanceof Error ? e.message : String(e), "error"); } } });
-  pi.registerCommand("teleport-remove", { description: "Remove a clean Teleport-owned Git worktree", async handler(id, ctx) { try { removeManagedWorktree({ repo: ctx.cwd, id: id.trim(), stateDir: dir }); notify(ctx, `Removed managed worktree ${id.trim()}.`); } catch (e) { notify(ctx, e instanceof Error ? e.message : String(e), "error"); } } });
+  type PendingOperation = { action: "jump" | "back"; target?: string };
+  const pending = new Map<string, PendingOperation>();
 
-  pi.registerTool({ name: "teleport", label: "Teleport", description: "Move this persisted Pi session, manage Teleport-owned worktrees, or inspect movement history. Move operations are queued until the current model turn ends.", parameters: Type.Object({ action: StringEnum(["jump", "back", "history", "create", "remove"] as const), target: Type.Optional(Type.String()), branch: Type.Optional(Type.String()), base: Type.Optional(Type.String()), path: Type.Optional(Type.String()), resourceId: Type.Optional(Type.String()) }, { additionalProperties: false }), async execute(_id, p) {
-    if (p.action === "history") { const history = readState(dir).history; return { content: [{ type: "text", text: history.length ? history.map((h) => `${h.from} → ${h.to}`).join("\n") : "Teleport history is empty." }], details: {} }; }
-    const command = p.action === "jump" ? `/teleport ${p.target ?? ""}` : p.action === "back" ? "/teleport-back" : p.action === "create" ? `/teleport-create ${[p.branch, p.base, p.path].filter(Boolean).join(" ")}` : `/teleport-remove ${p.resourceId ?? ""}`;
-    pi.sendUserMessage(command, { deliverAs: "followUp", expandPromptTemplates: true });
-    return { content: [{ type: "text", text: `Queued ${command}. It will run after this turn.` }], details: {}, terminate: true };
-  }});
+  // Pi exposes session replacement only to command contexts. This command is an
+  // internal one-shot transport for the agent tool and is not a public API.
+  pi.registerCommand("__teleport_internal", {
+    async handler(token, ctx) {
+      const operation = pending.get(token);
+      pending.delete(token);
+      if (!operation) return;
+      try {
+        if (operation.action === "jump") {
+          if (!operation.target) throw new Error("A target directory is required.");
+          await jump(ctx, operation.target);
+        } else {
+          const previous = readState(dir).history.at(-1)?.from;
+          if (!previous) throw new Error("Teleport history is empty.");
+          await jump(ctx, previous);
+        }
+      } catch (error) {
+        notify(ctx, error instanceof Error ? error.message : String(error), "error");
+      }
+    },
+  });
 
+  pi.registerTool({
+    name: "teleport",
+    label: "Teleport",
+    description: "Move this persisted Pi session, manage Teleport-owned worktrees, or inspect movement history.",
+    parameters: Type.Object({
+      action: StringEnum(["jump", "back", "history", "create", "remove"] as const),
+      target: Type.Optional(Type.String()),
+      branch: Type.Optional(Type.String()),
+      base: Type.Optional(Type.String()),
+      path: Type.Optional(Type.String()),
+      resourceId: Type.Optional(Type.String()),
+    }, { additionalProperties: false }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      if (params.action === "history") {
+        const history = readState(dir).history;
+        return { content: [{ type: "text" as const, text: history.length ? history.map((entry) => `${entry.from} → ${entry.to}`).join("\n") : "Teleport history is empty." }], details: { history } };
+      }
+      if (params.action === "create") {
+        if (!params.branch) throw new Error("A branch is required.");
+        const resource = createManagedWorktree({ repo: ctx.cwd, branch: params.branch, base: params.base, path: params.path, stateDir: dir });
+        return { content: [{ type: "text" as const, text: `Created ${resource.path}\nResource: ${resource.id}` }], details: { resource } };
+      }
+      if (params.action === "remove") {
+        if (!params.resourceId) throw new Error("A resourceId is required.");
+        removeManagedWorktree({ repo: ctx.cwd, id: params.resourceId, stateDir: dir });
+        return { content: [{ type: "text" as const, text: `Removed managed worktree ${params.resourceId}.` }], details: { resourceId: params.resourceId } };
+      }
+      if (params.action === "jump" && !params.target) throw new Error("A target directory is required.");
+      const token = randomUUID();
+      pending.set(token, { action: params.action, target: params.target });
+      pi.sendUserMessage(`/__teleport_internal ${token}`, { deliverAs: "followUp", expandPromptTemplates: true });
+      return {
+        content: [{ type: "text" as const, text: params.action === "jump" ? `Queued teleport to ${params.target}.` : "Queued teleport to the previous location." }],
+        details: { action: params.action, target: params.target },
+        terminate: true,
+      };
+    },
+  });
   pi.on("session_start", (_event, ctx) => { sessionId = ctx.sessionManager.getSessionId(); dir = dataDir(sessionId); const state = reconcileState(dir); const file = ctx.sessionManager.getSessionFile(); if (file) { state.active = { cwd: ctx.cwd, sessionFile: file }; writeState(dir, state); } });
 }

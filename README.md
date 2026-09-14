@@ -8,16 +8,19 @@ A Pi extension that moves one persisted session between directories without leav
 pi install npm:@alexshp/pi-agent-teleport
 ```
 
-## Commands
+## Agent tool
 
-- `/teleport <directory>` moves the active session to an existing directory.
-- `/teleport-wt <branch-or-path>` resolves an existing worktree through optional Worktrunk.
-- `/teleport-back` moves to the previous directory.
-- `/teleport-history` shows completed moves.
-- `/teleport-create <branch> [base] [path]` creates a linked Git worktree owned by Teleport.
-- `/teleport-remove <resource-id>` removes a clean worktree recorded as Teleport-owned.
+Teleport exposes only the `teleport` tool. It does not provide user-facing slash commands.
 
-Agents use the `teleport` tool. Moves are queued as follow-up commands because Pi only exposes session replacement to command contexts. An existing Worktrunk worktree is just an existing directory, so `wt switch` output or a Worktrunk path can be passed to `/teleport`; Worktrunk is optional and is never required at runtime.
+Actions:
+
+- `jump` moves the active session to an existing directory.
+- `back` moves it to the previous directory.
+- `history` lists completed moves.
+- `create` creates a linked Git worktree owned by Teleport.
+- `remove` removes a clean worktree recorded as Teleport-owned.
+
+Pi currently exposes session replacement only to command contexts. Teleport therefore uses a private one-shot command internally for `jump` and `back`; it is transport plumbing, not a supported user API. Worktrunk is not required at runtime.
 
 ## Safety model
 
