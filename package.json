@@ -1,0 +1,28 @@
+{
+  "name": "@alexshp/pi-agent-teleport",
+  "version": "0.1.0",
+  "description": "Move one Pi session between directories and managed Git worktrees",
+  "type": "module",
+  "license": "MIT",
+  "author": "Alex Shpunt",
+  "files": ["src", "README.md", "LICENSE", "CHANGELOG.md"],
+  "pi": { "extensions": ["./src/index.ts"] },
+  "scripts": {
+    "test": "vitest run src",
+    "test:integration": "pi-test run -- vitest run --config vitest.integration.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "latest",
+    "@earendil-works/pi-coding-agent": "latest",
+    "@earendil-works/pi-tui": "latest",
+    "typebox": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "pi-coding-agent-test": "latest",
+    "typescript": "latest",
+    "vitest": "latest"
+  },
+  "engines": { "node": ">=22" }
+}
