@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.6 - 2026-09-14
+
+- Restore compact WebP artwork after verifying Pi Gallery supports the format.
+- Pin the gallery image to the release tag instead of the moving main branch.
+
 ## 0.1.5 - 2026-09-14
 
 - Use PNG for the Pi gallery preview so the gallery can render it reliably.

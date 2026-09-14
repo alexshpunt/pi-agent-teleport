@@ -1,6 +1,6 @@
 {
   "name": "pi-agent-teleport",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Give your agent a teleportation gun: move one Pi session between directories and managed Git worktrees",
   "keywords": [
     "pi-package"
@@ -31,7 +31,7 @@
     "extensions": [
       "./src/index.ts"
     ],
-    "image": "https://raw.githubusercontent.com/alexshpunt/pi-agent-teleport/main/assets/agent-portal-gallery.png"
+    "image": "https://raw.githubusercontent.com/alexshpunt/pi-agent-teleport/v0.1.6/assets/agent-portal-gallery.webp"
   },
   "scripts": {
     "test": "vitest run src",
