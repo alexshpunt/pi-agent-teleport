@@ -26,4 +26,26 @@ test("a real Pi process exposes stable empty teleport history", async () => {
   expect(getToolResultText(result, "history")).toBe("Teleport history is empty.");
 });
 
+test("a missing teleport destination is returned to the agent without ending the turn", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "teleport-missing-destination-"));
+  workspaces.push(cwd);
+  const missing = join(cwd, "does-not-exist");
+  const result = await new PiIntegrationTest({
+    testName: "teleport-missing-destination",
+    artifactsDir: testArtifactsDir(import.meta.filename),
+    cwd,
+    extensions: [join(dirname(import.meta.filename), "..", "src", "index.ts")],
+    tools: ["teleport"],
+    rawMode: false,
+    conversation: [
+      assistantMessage([toolCall({ id: "missing", name: "teleport", arguments: { action: "jump", target: missing } })], { stopReason: "toolUse" }),
+      assistantMessage([text("I will find the correct directory and retry.")]),
+    ],
+  }).run("Teleport to the requested directory");
+
+  expect(getToolExecution(result, "missing").isError).toBe(true);
+  expect(getToolResultText(result, "missing")).toContain(`Directory does not exist: ${missing}`);
+  expect(getToolResultText(result, "missing")).toContain("Find the correct directory and retry teleport.");
+});
+
 
