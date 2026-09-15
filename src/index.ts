@@ -168,6 +168,12 @@ export default function teleport(pi: ExtensionAPI) {
         return { content: [{ type: "text" as const, text: `Removed managed worktree ${params.resourceId}.` }], details: { resourceId: params.resourceId } };
       }
       if (params.action === "jump" && !params.target) throw new Error("A target directory is required.");
+      if (params.action === "jump") {
+        const target = resolve(ctx.cwd, params.target!);
+        if (!existsSync(target)) {
+          throw new Error(`Directory does not exist: ${target}. Find the correct directory and retry teleport.`);
+        }
+      }
       const token = randomUUID();
       pending.set(token, { action: params.action, target: params.target });
       pi.sendUserMessage(`/__teleport_internal ${token}`, { deliverAs: "followUp", expandPromptTemplates: true });
@@ -196,10 +202,11 @@ export default function teleport(pi: ExtensionAPI) {
       }
       return component;
     },
-    renderResult(result, options, theme) {
+    renderResult(result, options, theme, context) {
       if (options.isPartial) return new Text(theme.fg("warning", "  ◌ preparing destination…"), 0, 0);
       const text = result.content?.find((item) => item.type === "text")?.text ?? "";
       if (!text) return new Text("", 0, 0);
+      if (context.isError) return new Text(`  ${theme.fg("error", "✗")} ${theme.fg("error", text)}`, 0, 0);
       const details = result.details as { action?: string; history?: Array<{ from: string; to: string }> } | undefined;
       if (details?.history) {
         const routes = details.history.map((entry) =>
