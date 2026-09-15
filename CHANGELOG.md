@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.7 - 2026-09-15
+
+- Keep the agent running when a teleport destination does not exist and tell it to find the correct path.
+- Render failed teleports as errors instead of successful handoffs.
+
 ## 0.1.6 - 2026-09-14
 
 - Restore compact WebP artwork after verifying Pi Gallery supports the format.
