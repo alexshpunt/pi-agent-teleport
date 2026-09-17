@@ -1,6 +1,6 @@
 {
   "name": "pi-agent-teleport",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Move a running Pi Coding Agent session between directories, repositories, and isolated Git worktrees",
   "keywords": [
     "pi-package",
@@ -13,7 +13,13 @@
     "git-worktree",
     "worktree",
     "session-management",
-    "developer-tools"
+    "developer-tools",
+    "agentic-coding",
+    "coding-tools",
+    "git-tools",
+    "development-workflow",
+    "worktrees",
+    "repository-management"
   ],
   "type": "module",
   "license": "MIT",

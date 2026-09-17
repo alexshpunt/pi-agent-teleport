@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.10 - 2026-09-17
+
+- Add search terms for common coding-agent, Git, and repository workflows.
+
 ## 0.1.9 - 2026-09-17
 
 - Follow Pi package dependency rules and improve package discovery metadata.
