@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.8 - 2026-09-17
+
+- Keep the agent working in its current location after any queued teleport fails.
+- Show the teleport error in the TUI before starting the next agent turn.
+
 ## 0.1.7 - 2026-09-15
 
 - Keep the agent running when a teleport destination does not exist and tell it to find the correct path.
