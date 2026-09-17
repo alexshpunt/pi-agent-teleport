@@ -1,13 +1,23 @@
 {
   "name": "pi-agent-teleport",
-  "version": "0.1.8",
-  "description": "Give your agent a teleportation gun: move one Pi session between directories and managed Git worktrees",
+  "version": "0.1.9",
+  "description": "Move a running Pi Coding Agent session between directories, repositories, and isolated Git worktrees",
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "pi-extension",
+    "coding-agent",
+    "ai-agent",
+    "git",
+    "git-worktree",
+    "worktree",
+    "session-management",
+    "developer-tools"
   ],
   "type": "module",
   "license": "MIT",
-  "author": "Alex Shpunt",
+  "author": "Aleksandr Shpuntenko",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/alexshpunt/pi-agent-teleport.git"
@@ -21,8 +31,10 @@
     "registry": "https://registry.npmjs.org/"
   },
   "files": [
-    "src",
-    "assets",
+    "src/index.ts",
+    "src/core.ts",
+    "assets/agent-portal.webp",
+    "assets/agent-portal-gallery.webp",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"
@@ -38,11 +50,11 @@
     "test:integration": "pi-test run -- vitest run --config vitest.integration.config.ts",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
-    "@earendil-works/pi-ai": "latest",
-    "@earendil-works/pi-coding-agent": "latest",
-    "@earendil-works/pi-tui": "latest",
-    "typebox": "latest"
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
   },
   "devDependencies": {
     "@types/node": "latest",

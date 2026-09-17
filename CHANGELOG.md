@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.9 - 2026-09-17
+
+- Follow Pi package dependency rules and improve package discovery metadata.
+- Add practical first-use examples and clearer product positioning.
+- Publish only runtime source files.
+
 ## 0.1.8 - 2026-09-17
 
 - Keep the agent working in its current location after any queued teleport fails.

@@ -4,7 +4,9 @@
 
 <h1 align="center">Pi Agent Teleport</h1>
 
-<p align="center">Give your agent a teleportation gun.</p>
+<p align="center">Move a running Pi Coding Agent session between directories, repositories, and isolated Git worktrees.</p>
+
+<p align="center"><em>Give your agent a teleportation gun.</em></p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/pi-agent-teleport"><img src="https://img.shields.io/npm/v/pi-agent-teleport" alt="npm version"></a>
@@ -15,8 +17,7 @@
 
 Pi normally lives in the directory where you started it. Teleport lets the agent move
 the running session to another directory, another repository, or a fresh Git worktree —
-and jump back when the job is done. The conversation continues, the session stays the
-same, and no duplicate session files are left behind.
+and jump back when the job is done. The conversation continues and the session stays the same.
 
 ```text
 ✦ Agent teleport
@@ -32,6 +33,20 @@ message.
 ```bash
 pi install npm:pi-agent-teleport
 ```
+
+## Use it
+
+Ask the agent to move or isolate the work:
+
+```text
+Move this session to /root/dev/my-other-repo and continue there.
+
+Create an isolated worktree for the login fix, move into it, and continue the task.
+
+Go back to the previous repository and remove the worktree you created.
+```
+
+The agent calls Teleport itself. You do not need to remember a slash command or tool syntax. Teleport requires a persisted Pi session.
 
 ## What it gives the agent
 
@@ -75,8 +90,8 @@ confirmation fails, it closes only the new tab and keeps the source.
 - a matching Git common directory,
 - a clean worktree.
 
-Teleport never deletes an unrecorded resource, and it has no force option. A branch that
-is fully merged into its base is deleted with the worktree; an unmerged branch is kept.
+Teleport never deletes an unrecorded resource, and it has no force option. After removing the worktree, Teleport asks Git to delete the branch with `git branch -d`.
+Git deletes a safely merged branch and refuses to delete an unmerged one.
 
 ## State and recovery
 
