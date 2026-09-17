@@ -131,7 +131,13 @@ export default function teleport(pi: ExtensionAPI) {
           await jump(ctx, previous);
         }
       } catch (error) {
-        notify(ctx, error instanceof Error ? error.message : String(error), "error");
+        const message = error instanceof Error ? error.message : String(error);
+        notify(ctx, message, "error");
+        pi.sendMessage({
+          customType: "pi-agent-teleport-failure",
+          content: `Teleport failed: ${message} Continue the original task from the current location.`,
+          display: false,
+        }, { triggerTurn: true });
       }
     },
   });

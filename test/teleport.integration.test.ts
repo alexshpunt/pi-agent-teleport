@@ -26,6 +26,27 @@ test("a real Pi process exposes stable empty teleport history", async () => {
   expect(getToolResultText(result, "history")).toBe("Teleport history is empty.");
 });
 
+test("a failed queued teleport starts a new agent turn", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "teleport-empty-history-"));
+  workspaces.push(cwd);
+  const result = await new PiIntegrationTest({
+    testName: "teleport-empty-history-continues",
+    artifactsDir: testArtifactsDir(import.meta.filename),
+    cwd,
+    extensions: [join(dirname(import.meta.filename), "..", "src", "index.ts")],
+    tools: ["teleport"],
+    rawMode: false,
+    conversation: [
+      assistantMessage([toolCall({ id: "back", name: "teleport", arguments: { action: "back" } })], { stopReason: "toolUse" }),
+      assistantMessage([text("I continued after the teleport failed.")]),
+    ],
+  }).run("Return to the previous location");
+
+  expect(getToolExecution(result, "back").isError).toBe(false);
+  expect(result.providerRequests).toHaveLength(2);
+  expect(result.terminalOutput).toContain("Teleport history is empty.");
+});
+
 test("a missing teleport destination is returned to the agent without ending the turn", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "teleport-missing-destination-"));
   workspaces.push(cwd);
