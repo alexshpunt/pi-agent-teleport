@@ -77,10 +77,11 @@ create worktree → jump into it → do the work → back → remove the worktre
 If step 3 is cancelled or fails, Teleport removes the prepared destination and keeps the
 source untouched.
 
-Under Herdr, the replacement is stronger. Teleport creates a destination tab, starts Pi
-with the destination session, waits until Herdr reports that exact process and session,
-commits the state, schedules the source session removal, and closes the source tab. If
-confirmation fails, it closes only the new tab and keeps the source.
+Under Herdr, the replacement is stronger. Teleport creates a destination tab without
+focusing it, starts Pi with the destination session, and waits until Herdr reports that
+exact process and session. It then commits the state, removes the source session, and
+closes the source tab without waiting for the old process to stop. If confirmation fails,
+it closes only the new tab and keeps the source.
 
 ## Managed worktrees
 
@@ -92,6 +93,8 @@ confirmation fails, it closes only the new tab and keeps the source.
 
 Teleport never deletes an unrecorded resource, and it has no force option. After removing the worktree, Teleport asks Git to delete the branch with `git branch -d`.
 Git deletes a safely merged branch and refuses to delete an unmerged one.
+
+Create and remove results show the worktree's full path and branch. Internal resource IDs stay out of the main UI.
 
 ## State and recovery
 

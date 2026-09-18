@@ -74,12 +74,16 @@ export function createManagedWorktree(input: { repo: string; branch: string; bas
 }
 
 /** Remove a clean Teleport-owned worktree. Foreign, dirty, and mismatched paths are refused. */
-export function removeManagedWorktree(input: { repo: string; id: string; stateDir: string }): void {
+export function removeManagedWorktree(input: { repo: string; id: string; stateDir: string }): Resource {
   const state = readState(input.stateDir);
   const resource = state.resources[input.id];
   if (!resource || resource.owner !== "pi-agent-teleport") throw new Error(`Resource ${input.id} is not owned by Teleport.`);
   if (canonical(input.repo) !== resource.repo) throw new Error("The owning repository does not match.");
-  if (!existsSync(resource.path)) { delete state.resources[input.id]; writeState(input.stateDir, state); return; }
+  if (!existsSync(resource.path)) {
+    delete state.resources[input.id];
+    writeState(input.stateDir, state);
+    return resource;
+  }
   const common = canonical(resolve(resource.path, git(resource.path, ["rev-parse", "--git-common-dir"])));
   const expected = canonical(resolve(resource.repo, git(resource.repo, ["rev-parse", "--git-common-dir"])));
   if (common !== expected) throw new Error("The worktree no longer belongs to the recorded repository.");
@@ -88,4 +92,5 @@ export function removeManagedWorktree(input: { repo: string; id: string; stateDi
   try { git(resource.repo, ["branch", "-d", resource.branch]); } catch { /* Preserve unmerged branches. */ }
   delete state.resources[input.id];
   writeState(input.stateDir, state);
+  return resource;
 }

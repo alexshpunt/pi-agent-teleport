@@ -9,7 +9,7 @@ import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 
 
-import { createManagedWorktree, readState, reconcileState, removeManagedWorktree, writeState } from "./core.ts";
+import { createManagedWorktree, readState, reconcileState, removeManagedWorktree, writeState, type Resource } from "./core.ts";
 
 function dataDir(sessionId: string): string { return join(process.env.PI_CODING_AGENT_DIR ?? join(process.env.HOME ?? homedir(), ".pi", "agent"), "teleport", sessionId); }
 function serialize(ctx: ExtensionCommandContext, target: string): { source: string; destination: string } {
@@ -38,16 +38,24 @@ async function waitForDestination(pane: string, session: string): Promise<void> 
   }
   throw new Error("Timed out confirming the destination Pi process.");
 }
-async function scheduleSourceCleanup(pi: ExtensionAPI, sessionFile: string, tabId: string): Promise<void> {
-  const cleanup = [
-    `old_pid=${process.pid}`,
-    `old_session=${quote(sessionFile)}`,
-    `old_tab=${quote(tabId)}`,
-    'i=0',
-    'while kill -0 "$old_pid" 2>/dev/null && [ "$i" -lt 600 ]; do i=$((i + 1)); sleep 0.1; done',
-    'rm -f -- "$old_session"',
-    'herdr tab close "$old_tab" >/dev/null 2>&1 || true',
-  ].join('; ');
+/** Build the detached command that closes the source tab before cleaning its session file. */
+export function buildSourceTabCleanup(tabId: string, sourcePid: number, sessionFile: string): string {
+  return [
+    "sleep 0.25",
+    `herdr tab close ${quote(tabId)} >/dev/null 2>&1 || true`,
+    "i=0",
+    `while kill -0 ${sourcePid} 2>/dev/null && [ "$i" -lt 50 ]; do i=$((i + 1)); sleep 0.1; done`,
+    `rm -f -- ${quote(sessionFile)}`,
+  ].join("; ");
+}
+
+/** Describe a removed worktree using human-facing identifiers. */
+export function formatRemovedWorktree(resource: Resource): string {
+  return `Removed worktree ${resource.path}\nBranch: ${resource.branch}`;
+}
+
+async function scheduleSourceCleanup(pi: ExtensionAPI, tabId: string, sessionFile: string): Promise<void> {
+  const cleanup = buildSourceTabCleanup(tabId, process.pid, sessionFile);
   const launcher = `if command -v setsid >/dev/null 2>&1; then setsid sh -c ${quote(cleanup)} >/dev/null 2>&1 < /dev/null & else nohup sh -c ${quote(cleanup)} >/dev/null 2>&1 < /dev/null & fi`;
   const result = await pi.exec('sh', ['-lc', launcher], { timeout: 5_000 });
   if (result.code !== 0) throw new Error(result.stderr || result.stdout || 'Failed to schedule source cleanup.');
@@ -80,8 +88,7 @@ export default function teleport(pi: ExtensionAPI) {
         state.history.push({ from: sourceCwd, to: target, at: Date.now(), status: "completed" });
         delete state.transition;
         writeState(dir, state);
-        await scheduleSourceCleanup(pi, source, process.env.HERDR_TAB_ID);
-        herdr(["workspace", "focus", process.env.HERDR_WORKSPACE_ID]);
+        await scheduleSourceCleanup(pi, process.env.HERDR_TAB_ID, source);
         ctx.shutdown();
       } catch (error) {
         try { herdr(["tab", "close", tab]); } catch {}
@@ -166,12 +173,12 @@ export default function teleport(pi: ExtensionAPI) {
       if (params.action === "create") {
         if (!params.branch) throw new Error("A branch is required.");
         const resource = createManagedWorktree({ repo: ctx.cwd, branch: params.branch, base: params.base, path: params.path, stateDir: dir });
-        return { content: [{ type: "text" as const, text: `Created ${resource.path}\nResource: ${resource.id}` }], details: { resource } };
+        return { content: [{ type: "text" as const, text: `Created worktree ${resource.path}\nBranch: ${resource.branch}` }], details: { resource } };
       }
       if (params.action === "remove") {
         if (!params.resourceId) throw new Error("A resourceId is required.");
-        removeManagedWorktree({ repo: ctx.cwd, id: params.resourceId, stateDir: dir });
-        return { content: [{ type: "text" as const, text: `Removed managed worktree ${params.resourceId}.` }], details: { resourceId: params.resourceId } };
+        const resource = removeManagedWorktree({ repo: ctx.cwd, id: params.resourceId, stateDir: dir });
+        return { content: [{ type: "text" as const, text: formatRemovedWorktree(resource) }], details: { resource } };
       }
       if (params.action === "jump" && !params.target) throw new Error("A target directory is required.");
       if (params.action === "jump") {
@@ -202,7 +209,12 @@ export default function teleport(pi: ExtensionAPI) {
       } else if (args.action === "create") {
         component.setText(`${title} ${theme.fg("accent", "+ worktree")} ${theme.fg("muted", args.branch ?? "branch required")}`);
       } else if (args.action === "remove") {
-        component.setText(`${title} ${theme.fg("warning", "− worktree")} ${theme.fg("muted", args.resourceId ?? "resource required")}`);
+        const resource = args.resourceId ? readState(dir).resources[args.resourceId] : undefined;
+        if (resource) {
+          component.setText(`${title} ${theme.fg("warning", "− worktree")}\n  ${theme.fg("accent", resource.path)}\n  ${theme.fg("muted", "branch:")} ${theme.fg("warning", resource.branch)}`);
+        } else if (!context.lastComponent) {
+          component.setText(`${title} ${theme.fg("warning", "− worktree")} ${theme.fg("muted", "resource required")}`);
+        }
       } else {
         component.setText(`${title} ${theme.fg("muted", "history")}`);
       }
