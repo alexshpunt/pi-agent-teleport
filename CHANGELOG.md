@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0 - 2026-09-18
+
+- Close the source agent session immediately after a confirmed Herdr handoff.
+- Keep destination tabs in the background instead of taking focus from the user.
+- Show worktree paths and branches in create and remove results instead of internal resource IDs.
+
 ## 0.1.10 - 2026-09-17
 
 - Add search terms for common coding-agent, Git, and repository workflows.
