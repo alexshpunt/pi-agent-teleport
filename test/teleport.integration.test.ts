@@ -23,7 +23,7 @@ test("a real Pi process exposes stable empty teleport history", async () => {
     ],
   }).run("Check teleport history");
   expect(getToolExecution(result, "history").isError).toBe(false);
-  expect(getToolResultText(result, "history")).toBe("Teleport history is empty.");
+  expect(getToolResultText(result, "history")).toBe("Teleport history is empty.\nManaged worktrees:\nnone");
 });
 
 test("a failed queued teleport starts a new agent turn", async () => {
