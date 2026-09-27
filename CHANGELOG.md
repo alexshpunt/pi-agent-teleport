@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1 - 2026-09-27
+
+- Show the resource ID after creating a worktree and in history, so the agent can remove it later.
+- Explain that removing a worktree requires its resource ID.
+
 ## 0.2.0 - 2026-09-18
 
 - Close the source agent session immediately after a confirmed Herdr handoff.
