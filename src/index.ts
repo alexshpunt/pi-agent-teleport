@@ -155,7 +155,7 @@ export default function teleport(pi: ExtensionAPI) {
     description: [
       "Move this persisted Pi session between directories, repositories, and isolated Git worktrees.",
       "Use Teleport whenever work needs to continue from another folder or repository; use create followed by jump when a feature or fix should be isolated in its own worktree.",
-      "Use back to return, then remove to safely clean up a Teleport-owned worktree. Prefer this tool over shell cd because Teleport moves the active session and preserves its navigation history.",
+      "Use back to return, then remove to safely clean up a Teleport-owned worktree. Remove requires resourceId from create or history. Prefer this tool over shell cd because Teleport moves the active session and preserves its navigation history.",
     ].join(" "),
     parameters: Type.Object({
       action: StringEnum(["jump", "back", "history", "create", "remove"] as const),
@@ -167,13 +167,17 @@ export default function teleport(pi: ExtensionAPI) {
     }, { additionalProperties: false }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       if (params.action === "history") {
-        const history = readState(dir).history;
-        return { content: [{ type: "text" as const, text: history.length ? history.map((entry) => `${entry.from} → ${entry.to}`).join("\n") : "Teleport history is empty." }], details: { history } };
+        const state = readState(dir);
+        const history = state.history;
+        const resources = Object.values(state.resources);
+        const routes = history.length ? history.map((entry) => `${entry.from} → ${entry.to}`).join("\n") : "Teleport history is empty.";
+        const managed = resources.length ? resources.map((resource) => `${resource.path} (${resource.branch}) — resourceId: ${resource.id}`).join("\n") : "none";
+        return { content: [{ type: "text" as const, text: `${routes}\nManaged worktrees:\n${managed}` }], details: { history, resources } };
       }
       if (params.action === "create") {
         if (!params.branch) throw new Error("A branch is required.");
         const resource = createManagedWorktree({ repo: ctx.cwd, branch: params.branch, base: params.base, path: params.path, stateDir: dir });
-        return { content: [{ type: "text" as const, text: `Created worktree ${resource.path}\nBranch: ${resource.branch}` }], details: { resource } };
+        return { content: [{ type: "text" as const, text: `Created worktree ${resource.path}\nBranch: ${resource.branch}\nUse resourceId: ${resource.id} to remove this worktree` }], details: { resource } };
       }
       if (params.action === "remove") {
         if (!params.resourceId) throw new Error("A resourceId is required.");
@@ -225,12 +229,15 @@ export default function teleport(pi: ExtensionAPI) {
       const text = result.content?.find((item) => item.type === "text")?.text ?? "";
       if (!text) return new Text("", 0, 0);
       if (context.isError) return new Text(`  ${theme.fg("error", "✗")} ${theme.fg("error", text)}`, 0, 0);
-      const details = result.details as { action?: string; history?: Array<{ from: string; to: string }> } | undefined;
+      const details = result.details as { action?: string; history?: Array<{ from: string; to: string }>; resources?: Resource[] } | undefined;
       if (details?.history) {
         const routes = details.history.map((entry) =>
           `  ${theme.fg("accent", entry.from)} ${theme.fg("muted", "→")} ${theme.fg("warning", entry.to)}`
         );
-        return new Text(routes.length ? routes.join("\n") : theme.fg("muted", "  No teleport history."), 0, 0);
+        const worktrees = details.resources?.length
+          ? details.resources.map((resource) => `  ${theme.fg("accent", resource.path)} ${theme.fg("muted", `(${resource.branch}) resourceId: ${resource.id}`)}`).join("\n")
+          : theme.fg("muted", "  None");
+        return new Text(`${routes.length ? routes.join("\n") : theme.fg("muted", "  No teleport history.")}\n  ${theme.fg("muted", "Managed worktrees:")}\n${worktrees}`, 0, 0);
       }
       const prefix = details?.action === "jump" || details?.action === "back"
         ? theme.fg("success", "  ✓ handoff prepared")

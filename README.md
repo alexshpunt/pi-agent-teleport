@@ -94,7 +94,7 @@ it closes only the new tab and keeps the source.
 Teleport never deletes an unrecorded resource, and it has no force option. After removing the worktree, Teleport asks Git to delete the branch with `git branch -d`.
 Git deletes a safely merged branch and refuses to delete an unmerged one.
 
-Create and remove results show the worktree's full path and branch. Internal resource IDs stay out of the main UI.
+Create results show the path, branch, and `resourceId` needed for `remove`. The `history` result lists managed worktrees with their IDs, so you can recover an ID after moving. `remove` requires that ID and still checks ownership and cleanliness.
 
 ## State and recovery
 
