@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { prepareHerdrDestination } from "./core.ts";
@@ -34,6 +34,27 @@ function destination(path: string) {
   };
 }
 describe("Herdr destination routing", () => {
+  test.each([undefined, "", "Fix login"])("names plain directory tabs from the session or destination (%s)", (name) => {
+    const path = checkout();
+    const folder = resolve(path, "notes");
+    mkdirSync(folder);
+    vi.mocked(runHerdr).mockReturnValue({ tab: { tab_id: "w1:t2", workspace_id: "w1" }, root_pane: { pane_id: "w1:p2", tab_id: "w1:t2", workspace_id: "w1" } });
+    const prepared = prepareHerdrDestination(caller, folder, undefined, name);
+    expect(runHerdr).toHaveBeenCalledWith(caller, ["tab", "create", "--workspace", "w1", "--cwd", folder, "--label", name || "notes", "--no-focus"]);
+    prepared.rollback();
+    expect(runHerdr).toHaveBeenLastCalledWith(caller, ["tab", "close", "w1:t2"]);
+  });
+
+  test("closes the new workspace if naming its root tab fails", () => {
+    const path = checkout();
+    vi.mocked(isHerdrShell).mockReturnValue(true);
+    vi.mocked(runHerdr).mockImplementation((_context, args) => {
+      if (args[1] === "rename") throw new Error("Rename failed");
+      return destination(path);
+    });
+    expect(() => prepareHerdrDestination(caller, path, undefined, "Fix login")).toThrow("Rename failed");
+    expect(runHerdr).toHaveBeenLastCalledWith(caller, ["workspace", "close", "w2"]);
+  });
   test("opens a checkout as a workspace and uses its new root shell", () => {
     const path = checkout();
     vi.mocked(runHerdr).mockReturnValue(destination(path));
@@ -41,7 +62,8 @@ describe("Herdr destination routing", () => {
     const prepared = prepareHerdrDestination(caller, path);
     expect(prepared.location.workspaceId).toBe("w2");
     expect(prepared.location.paneId).toBe("w2:p1");
-    expect(runHerdr).toHaveBeenCalledTimes(1);
+    expect(runHerdr).toHaveBeenCalledTimes(2);
+    expect(runHerdr).toHaveBeenCalledWith(caller, ["tab", "rename", "w2:t1", basename(path)]);
     expect(runHerdr).toHaveBeenCalledWith(caller, ["worktree", "open", "--cwd", path, "--path", path, "--no-focus"]);
     prepared.rollback();
     expect(runHerdr).toHaveBeenLastCalledWith(caller, ["workspace", "close", "w2"]);
@@ -53,8 +75,9 @@ describe("Herdr destination routing", () => {
     vi.mocked(runHerdr).mockReturnValue(opened);
     vi.mocked(isHerdrShell).mockReturnValue(true);
     const owned = { ...caller, workspaceId: "w2", tabId: "w2:t1", paneId: "w2:p1", parentWorkspaceId: "w1" };
-    const prepared = prepareHerdrDestination(caller, path, owned);
+    const prepared = prepareHerdrDestination(caller, path, owned, "Вход — исправление");
     expect(prepared.location.paneId).toBe("w2:p1");
+    expect(runHerdr).toHaveBeenCalledWith(caller, ["tab", "rename", "w2:t1", "Вход — исправление"]);
     prepared.rollback();
     expect(runHerdr).toHaveBeenLastCalledWith(caller, ["tab", "close", "w2:t1"]);
   });
@@ -65,9 +88,10 @@ describe("Herdr destination routing", () => {
       if (args[0] === "worktree") return { ...destination(path), already_open: true };
       return { tab: { tab_id: "w2:t2", workspace_id: "w2" }, root_pane: { pane_id: "w2:p2", tab_id: "w2:t2", workspace_id: "w2" } };
     });
-    const prepared = prepareHerdrDestination(caller, path);
+    const prepared = prepareHerdrDestination(caller, path, undefined, "Fix login");
     expect(prepared.location.paneId).toBe("w2:p2");
-    expect(runHerdr).toHaveBeenCalledWith(caller, ["tab", "create", "--workspace", "w2", "--cwd", path, "--label", "Teleport", "--no-focus"]);
+    expect(runHerdr).toHaveBeenCalledWith(caller, ["tab", "create", "--workspace", "w2", "--cwd", path, "--label", "Fix login", "--no-focus"]);
+    expect(runHerdr).not.toHaveBeenCalledWith(caller, expect.arrayContaining(["rename"]));
     prepared.rollback();
     expect(runHerdr).toHaveBeenLastCalledWith(caller, ["tab", "close", "w2:t2"]);
   });

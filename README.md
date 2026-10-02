@@ -81,6 +81,8 @@ Inside Herdr, Teleport opens Git checkouts through `herdr worktree open`. They a
 as workspaces grouped with their parent repository in the sidebar. It reuses the idle
 shell created by `create`, or makes a separate tab when a workspace already has other
 work. Plain directories still use a new tab in the current workspace.
+The destination tab uses the Pi session name, without a prefix. If the session has no
+name, it uses the destination folder name.
 
 Teleport starts Pi with the destination session without stealing focus, confirms the
 process, and saves the destination workspace, tab, and pane IDs. The destination waits

@@ -63,9 +63,10 @@ function primaryRepo(repo: string): string {
   return canonical(first.slice("worktree ".length));
 }
 
-/** Prepare a checkout workspace without stealing an existing user's pane. */
-export function prepareHerdrDestination(context: HerdrContext, target: string, owned?: Resource["herdr"]): { location: HerdrLocation; rollback: () => void } {
+/** Prepare a safe destination tab named after the Pi session, or its folder if unnamed. */
+export function prepareHerdrDestination(context: HerdrContext, target: string, owned?: Resource["herdr"], sessionName?: string): { location: HerdrLocation; rollback: () => void } {
   assertHerdrContext(context);
+  const label = sessionName || basename(target) || target;
   let checkout = false;
   try { checkout = canonical(git(target, ["rev-parse", "--show-toplevel"])) === canonical(target); } catch { /* Plain directories use the current workspace. */ }
   if (checkout) {
@@ -73,13 +74,16 @@ export function prepareHerdrDestination(context: HerdrContext, target: string, o
     const location = herdrLocation(context, opened, target);
     const ownShell = owned && sameHerdrConnection(context, owned) && owned.paneId === location.paneId && opened.workspace.pane_count === 1;
     if ((!opened.already_open || ownShell) && isHerdrShell(context, location.paneId)) {
-      return { location, rollback: () => { runHerdr(context, opened.already_open ? ["tab", "close", location.tabId] : ["workspace", "close", location.workspaceId]); } };
+      const rollback = () => { runHerdr(context, opened.already_open ? ["tab", "close", location.tabId] : ["workspace", "close", location.workspaceId]); };
+      try { runHerdr(context, ["tab", "rename", location.tabId, label]); }
+      catch (error) { try { rollback(); } catch {} throw error; }
+      return { location, rollback };
     }
-    const tab = runHerdr(context, ["tab", "create", "--workspace", location.workspaceId, "--cwd", target, "--label", "Teleport", "--no-focus"]);
+    const tab = runHerdr(context, ["tab", "create", "--workspace", location.workspaceId, "--cwd", target, "--label", label, "--no-focus"]);
     const next = herdrLocation(context, { ...tab, workspace: opened.workspace });
     return { location: next, rollback: () => { runHerdr(context, ["tab", "close", next.tabId]); } };
   }
-  const tab = runHerdr(context, ["tab", "create", "--workspace", context.workspaceId, "--cwd", target, "--label", "Teleport", "--no-focus"]);
+  const tab = runHerdr(context, ["tab", "create", "--workspace", context.workspaceId, "--cwd", target, "--label", label, "--no-focus"]);
   const location = herdrLocation(context, { ...tab, workspace: { workspace_id: context.workspaceId } });
   return { location, rollback: () => { runHerdr(context, ["tab", "close", location.tabId]); } };
 }

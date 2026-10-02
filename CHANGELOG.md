@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Name Herdr destination tabs after the Pi session, or the destination folder when unnamed.
+
 ## 0.2.2 - 2026-10-02
 
 - Create and open worktrees as grouped Herdr workspaces, using Herdr's configured checkout paths.

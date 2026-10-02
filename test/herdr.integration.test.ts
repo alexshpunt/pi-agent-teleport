@@ -66,7 +66,11 @@ test.skipIf(!available)("Herdr creates, groups, reuses, reopens, and removes an 
   const workspace = runHerdr(context, ["workspace", "get", resource.herdr!.workspaceId]).workspace;
   expect(workspace.worktree.checkout_path).toBe(resource.path);
   expect(workspace.worktree.repo_root).toBe(repo);
-  const prepared = prepareHerdrDestination(context, resource.path, resource.herdr);
+  const prepared = prepareHerdrDestination(context, resource.path, resource.herdr, "Вход — исправление");
+  expect(runHerdr(context, ["tab", "get", prepared.location.tabId]).tab.label).toBe("Вход — исправление");
+  const unnamed = prepareHerdrDestination(context, resource.path, resource.herdr);
+  expect(unnamed.location).toEqual(prepared.location);
+  expect(runHerdr(context, ["tab", "get", unnamed.location.tabId]).tab.label).toBe("login");
   expect(prepared.location.paneId).toBe(resource.herdr!.paneId);
   expect(runHerdr(context, ["tab", "list", "--workspace", prepared.location.workspaceId]).tabs).toHaveLength(1);
   expect(runHerdr(context, ["pane", "run", prepared.location.paneId, "true"])).toEqual({ type: "ok" });
