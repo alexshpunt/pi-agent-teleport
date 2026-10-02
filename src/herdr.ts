@@ -18,7 +18,11 @@ export function runHerdr(context: HerdrContext, args: string[]): any {
   if (context.socketPath) env.HERDR_SOCKET_PATH = context.socketPath;
   else delete env.HERDR_SOCKET_PATH;
   try {
-    const response = JSON.parse(execFileSync("herdr", args, { encoding: "utf8", env, timeout: 15_000, stdio: ["ignore", "pipe", "pipe"] }));
+    const output = execFileSync("herdr", args, { encoding: "utf8", env, timeout: 15_000, stdio: ["ignore", "pipe", "pipe"] }).trim();
+    // pane run acknowledges successful delivery with no JSON body.
+    if (!output && args[0] === "pane" && args[1] === "run") return { type: "ok" };
+    if (!output) throw new Error(`Herdr returned an empty response to ${args.join(" ")}.`);
+    const response = JSON.parse(output);
     if (response.error || !response.result) throw new Error(response.error?.message || "Herdr returned no result.");
     return response.result;
   } catch (error) {

@@ -69,6 +69,7 @@ test.skipIf(!available)("Herdr creates, groups, reuses, reopens, and removes an 
   const prepared = prepareHerdrDestination(context, resource.path, resource.herdr);
   expect(prepared.location.paneId).toBe(resource.herdr!.paneId);
   expect(runHerdr(context, ["tab", "list", "--workspace", prepared.location.workspaceId]).tabs).toHaveLength(1);
+  expect(runHerdr(context, ["pane", "run", prepared.location.paneId, "true"])).toEqual({ type: "ok" });
   // Simulate the source tab closing after back. The checkout remains on disk.
   runHerdr(context, ["tab", "close", prepared.location.tabId]);
   expect(existsSync(resource.path)).toBe(true);

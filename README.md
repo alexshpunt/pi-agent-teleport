@@ -137,7 +137,8 @@ On session start Teleport reconciles that state:
 - Teleport cannot carry in-memory extension state. Extensions must restore state from Pi
   session entries or from disk.
 - Pi exposes session replacement only to command contexts, so `jump` and `back` use a
-  private one-shot command as transport. It is plumbing, not a supported user API.
+  private one-shot command as transport. Teleport dispatches it after `agent_settled`,
+  not while a prompt is running. It is plumbing, not a supported user API.
 - Dirty managed worktrees must be cleaned manually before removal.
 - A worktree is checkout isolation, not a security sandbox.
 

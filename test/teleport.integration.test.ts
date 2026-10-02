@@ -81,6 +81,12 @@ test("a failed queued teleport starts a new agent turn", async () => {
   expect(getToolExecution(result, "back").isError).toBe(false);
   expect(result.providerRequests).toHaveLength(2);
   expect(result.terminalOutput).toContain("Teleport history is empty.");
+  const events = result.traceEvents;
+  const settled = events.findIndex((event) => event.type === "agent_settled");
+  const failure = events.findIndex((event) => event.type === "message_start" && (event.event as { message?: { customType?: string } })?.message?.customType === "pi-agent-teleport-failure");
+  expect(settled).toBeGreaterThanOrEqual(0);
+  expect(failure).toBeGreaterThan(settled);
+  expect(result.terminalOutput).not.toContain("Agent is already processing");
 });
 
 test("a missing teleport destination is returned to the agent without ending the turn", async () => {

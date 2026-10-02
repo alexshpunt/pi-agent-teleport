@@ -7,6 +7,13 @@ beforeEach(() => vi.resetAllMocks());
 const env = { HERDR_ENV: "1", HERDR_WORKSPACE_ID: "w1", HERDR_TAB_ID: "w1:t1", HERDR_PANE_ID: "w1:p1", HERDR_SESSION: "test", HERDR_SOCKET_PATH: "/test.sock" };
 
 describe("Herdr caller environment", () => {
+  test("accepts the empty acknowledgement from pane run, but not an empty query", () => {
+    const context = getHerdrContext(env)!;
+    vi.mocked(execFileSync).mockReturnValue("");
+    expect(runHerdr(context, ["pane", "run", "w2:p1", "printf ready"])).toEqual({ type: "ok" });
+    expect(() => runHerdr(context, ["pane", "process-info", "--pane", "w2:p1"])).toThrow(/empty response/);
+  });
+
   test("does not enable the CLI outside Herdr or with missing caller IDs", () => {
     expect(getHerdrContext({})).toBeUndefined();
     for (const key of ["HERDR_ENV", "HERDR_WORKSPACE_ID", "HERDR_TAB_ID", "HERDR_PANE_ID"]) {

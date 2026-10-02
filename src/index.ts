@@ -116,13 +116,23 @@ export default function teleport(pi: ExtensionAPI) {
         customType: "pi-agent-teleport-continuation",
         content: `Agent teleported: ${sourceCwd} → ${target}. Continue the original task from the destination. Do not repeat the teleport request.`,
         display: false,
-      }, { triggerTurn: true });
+      }, { triggerTurn: true, deliverAs: "followUp" });
     }});
     if (result.cancelled || !started) { rmSync(destination, { force: true }); state = readState(dir); delete state.transition; writeState(dir, state); throw new Error("Teleport was cancelled."); }
   }
 
   type PendingOperation = { action: "jump" | "back"; target?: string };
   const pending = new Map<string, PendingOperation>();
+  let queuedToken: string | undefined;
+
+  // Slash commands execute immediately in Pi, even with followUp delivery.
+  // Wait until the tool turn has fully settled before replacing its session.
+  pi.on("agent_settled", (_event, ctx) => {
+    if (!queuedToken || !ctx.isIdle()) return;
+    const token = queuedToken;
+    queuedToken = undefined;
+    pi.sendUserMessage(`/__teleport_internal ${token}`, { deliverAs: "followUp", expandPromptTemplates: true });
+  });
 
   // Pi exposes session replacement only to command contexts. This command is an
   // internal one-shot transport for the agent tool and is not a public API.
@@ -147,7 +157,7 @@ export default function teleport(pi: ExtensionAPI) {
           customType: "pi-agent-teleport-failure",
           content: `Teleport failed: ${message} Continue the original task from the current location.`,
           display: false,
-        }, { triggerTurn: true });
+        }, { triggerTurn: true, deliverAs: "followUp" });
       }
     },
   });
@@ -195,9 +205,10 @@ export default function teleport(pi: ExtensionAPI) {
           throw new Error(`Directory does not exist: ${target}. Find the correct directory and retry teleport.`);
         }
       }
+      if (pending.size) throw new Error("A Teleport move is already queued. Wait for it to finish.");
       const token = randomUUID();
       pending.set(token, { action: params.action, target: params.target });
-      pi.sendUserMessage(`/__teleport_internal ${token}`, { deliverAs: "followUp", expandPromptTemplates: true });
+      queuedToken = token;
       return {
         content: [{ type: "text" as const, text: params.action === "jump" ? `✦ Agent teleport queued: ${ctx.cwd} → ${resolve(ctx.cwd, params.target!)}` : `✦ Agent teleport queued: ${ctx.cwd} → previous location` }],
         details: { action: params.action, target: params.target },
@@ -274,7 +285,7 @@ export default function teleport(pi: ExtensionAPI) {
         customType: "pi-agent-teleport-continuation",
         content: Buffer.from(encodedContinuation, "base64url").toString("utf8"),
         display: false,
-      }, { triggerTurn: true });
+      }, { triggerTurn: true, deliverAs: "followUp" });
     }
   });
 }
