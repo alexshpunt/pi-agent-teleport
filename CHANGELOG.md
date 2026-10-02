@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.2 - 2026-10-02
+
+- Create and open worktrees as grouped Herdr workspaces, using Herdr's configured checkout paths.
+- Save Herdr workspace, tab, and pane IDs and safely remove idle worktree workspaces.
+- Wait for the current agent turn to settle before moving the session, avoiding overlapping prompts.
+- Accept empty successful Herdr command replies instead of failing to parse them as JSON.
+- Keep removed worktree history readable after a session move.
+
 ## 0.2.1 - 2026-09-27
 
 - Show the resource ID after creating a worktree and in history, so the agent can remove it later.
