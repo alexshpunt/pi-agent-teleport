@@ -77,19 +77,34 @@ create worktree → jump into it → do the work → back → remove the worktre
 If step 3 is cancelled or fails, Teleport removes the prepared destination and keeps the
 source untouched.
 
-Under Herdr, the replacement is stronger. Teleport creates a destination tab without
-focusing it, starts Pi with the destination session, and waits until Herdr reports that
-exact process and session. It then commits the state, removes the source session, and
-closes the source tab without waiting for the old process to stop. If confirmation fails,
-it closes only the new tab and keeps the source.
+Inside Herdr, Teleport opens Git checkouts through `herdr worktree open`. They appear
+as workspaces grouped with their parent repository in the sidebar. It reuses the idle
+shell created by `create`, or makes a separate tab when a workspace already has other
+work. Plain directories still use a new tab in the current workspace.
+
+Teleport starts Pi with the destination session without stealing focus, confirms the
+process, and saves the destination workspace, tab, and pane IDs. The destination waits
+for that handoff to commit before continuing the task. Only then does Teleport close the
+source tab and clean up its session file. If confirmation fails, it closes only the
+destination it prepared and keeps the source.
 
 ## Managed worktrees
 
-`create` registers ownership before it creates anything. `remove` requires all of these:
+Outside Herdr, `create` records ownership before running Git. Inside Herdr, it uses
+`herdr worktree create` and records the returned checkout path and workspace IDs.
+Herdr chooses its configured checkout directory unless you supply `path`. Creating
+from a linked checkout still uses that checkout’s commit as the default base.
+
+`remove` requires all of these:
 
 - a matching Teleport ownership record,
 - a matching Git common directory,
 - a clean worktree.
+
+For a Herdr-created checkout, removal also requires the owning Herdr connection and a
+workspace containing only its idle shell. A workspace closed by `back` is reopened
+without focus before removal. Extra panes or running commands block removal; Teleport
+never kills neighboring work. Herdr removes the workspace together with the checkout.
 
 Teleport never deletes an unrecorded resource, and it has no force option. After removing the worktree, Teleport asks Git to delete the branch with `git branch -d`.
 Git deletes a safely merged branch and refuses to delete an unmerged one.
@@ -111,8 +126,11 @@ On session start Teleport reconciles that state:
 
 - Pi 0.80 or newer.
 - Node.js 22 or newer.
-- Herdr replacement needs `HERDR_ENV`, `HERDR_TAB_ID`, and `HERDR_WORKSPACE_ID` plus the
-  public `herdr` CLI. Without Herdr, Teleport uses in-process session switching.
+- Herdr integration needs `HERDR_ENV=1`, `HERDR_PANE_ID`, `HERDR_TAB_ID`, and
+  `HERDR_WORKSPACE_ID`, plus the public `herdr` CLI with worktree commands. Teleport
+  verifies the live caller IDs before changing Herdr state. Missing environment values
+  use normal Git creation and in-process session switching. A valid but unreachable
+  Herdr connection fails explicitly rather than silently switching modes.
 
 ## Limitations
 

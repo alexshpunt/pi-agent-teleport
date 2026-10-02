@@ -1,8 +1,44 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { assistantMessage, getToolExecution, getToolResultText, PiIntegrationTest, testArtifactsDir, text, toolCall } from "pi-coding-agent-test";
+import { assistantMessage, getToolExecution, getToolExecutionDetails, getToolResultText, PiIntegrationTest, testArtifactsDir, text, toolCall } from "pi-coding-agent-test";
+
+test("a real Pi process uses ordinary Git when Herdr caller IDs are incomplete", async () => {
+  await mkdir(resolve(".tmp"), { recursive: true });
+  const fixture = await mkdtemp(resolve(".tmp/native-create-"));
+  workspaces.push(fixture);
+  const cwd = join(fixture, "repo");
+  await mkdir(cwd);
+  const git = (args: string[]) => execFileSync("git", args, { cwd, stdio: "ignore" });
+  git(["init", "-b", "main"]);
+  git(["config", "user.email", "test@example.com"]);
+  git(["config", "user.name", "Test"]);
+  await writeFile(join(cwd, "README"), "fixture\n");
+  git(["add", "."]);
+  git(["commit", "-m", "initial"]);
+  const path = join(fixture, "owned");
+  const result = await new PiIntegrationTest({
+    testName: "teleport-native-create",
+    artifactsDir: testArtifactsDir(import.meta.filename),
+    cwd,
+    environment: { ...process.env, HERDR_ENV: "1", HERDR_WORKSPACE_ID: "invalid", HERDR_TAB_ID: "invalid", HERDR_PANE_ID: "" },
+    extensions: [join(dirname(import.meta.filename), "..", "src", "index.ts")],
+    tools: ["teleport"],
+    rawMode: false,
+    conversation: [
+      assistantMessage([toolCall({ id: "create", name: "teleport", arguments: { action: "create", branch: "owned", path } })], { stopReason: "toolUse" }),
+      assistantMessage([text("Worktree created.")]),
+    ],
+  }).run("Create an isolated worktree");
+  expect(getToolExecution(result, "create").isError).toBe(false);
+  const details = getToolExecutionDetails(getToolExecution(result, "create")) as { resource: { path: string; herdr?: unknown } };
+  expect(details.resource.path).toBe(path);
+  expect(details.resource.herdr).toBeUndefined();
+  expect(getToolResultText(result, "create")).toContain(`Created worktree ${path}`);
+  expect(execFileSync("git", ["branch", "--show-current"], { cwd: path, encoding: "utf8" }).trim()).toBe("owned");
+});
 
 const workspaces: string[] = [];
 afterEach(async () => Promise.all(workspaces.splice(0).map((p) => rm(p, { recursive: true, force: true }))));
