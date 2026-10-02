@@ -78,7 +78,7 @@ export default function teleport(pi: ExtensionAPI) {
         prepared = prepareHerdrDestination(context, target, resource?.herdr, ctx.sessionManager.getSessionName());
         const location = prepared.location;
         const continuation = Buffer.from(`Agent teleported: ${sourceCwd} → ${target}. Continue the original task from the destination. Do not repeat the teleport request.`, "utf8").toString("base64url");
-        runHerdr(context, ["pane", "run", location.paneId, `PI_TELEPORT_CONTINUATION=${quote(continuation)} pi --session ${quote(destination)}`]);
+        runHerdr(context, ["pane", "run", location.paneId, `PI_TELEPORT_CONTINUATION=${quote(continuation)} pi --approve --session ${quote(destination)}`]);
         await waitForDestination(context, location.paneId, destination);
         state = readState(dir);
         state.active = { cwd: target, sessionFile: destination, herdr: location };
