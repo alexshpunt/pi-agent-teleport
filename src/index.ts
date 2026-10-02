@@ -232,7 +232,7 @@ export default function teleport(pi: ExtensionAPI) {
         if (resource) {
           component.setText(`${title} ${theme.fg("warning", "− worktree")}\n  ${theme.fg("accent", resource.path)}\n  ${theme.fg("muted", "branch:")} ${theme.fg("warning", resource.branch)}`);
         } else if (!context.lastComponent) {
-          component.setText(`${title} ${theme.fg("warning", "− worktree")} ${theme.fg("muted", "resource required")}`);
+          component.setText(`${title} ${theme.fg("warning", "− worktree")}${args.resourceId ? "" : ` ${theme.fg("muted", "resource required")}`}`);
         }
       } else {
         component.setText(`${title} ${theme.fg("muted", "history")}`);

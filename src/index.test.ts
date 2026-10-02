@@ -4,7 +4,8 @@ import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { prepareHerdrDestination } from "./core.ts";
 import { runHerdr, isHerdrShell, type HerdrContext } from "./herdr.ts";
-import { buildSourceTabCleanup, formatRemovedWorktree } from "./index.ts";
+import teleport, { buildSourceTabCleanup, formatRemovedWorktree } from "./index.ts";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 vi.mock("./herdr.ts", async (original) => ({
   ...await original<typeof import("./herdr.ts")>(),
@@ -81,6 +82,18 @@ describe("Herdr handoff", () => {
 });
 
 describe("worktree removal output", () => {
+  test("does not call a removed history entry a missing argument after session reload", () => {
+    let renderCall: ToolDefinition["renderCall"];
+    teleport({
+      registerTool: (definition: ToolDefinition) => { renderCall = definition.renderCall; },
+      registerCommand: () => {},
+      on: () => {},
+    } as unknown as ExtensionAPI);
+    const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as Parameters<NonNullable<ToolDefinition["renderCall"]>>[1];
+    const context = { cwd: "/repo" } as Parameters<NonNullable<ToolDefinition["renderCall"]>>[2];
+    expect(renderCall!({ action: "remove", resourceId: "removed" }, theme, context).render(120).join("\n")).not.toContain("resource required");
+  });
+
   test("shows the path and branch instead of the internal resource id", () => {
     const text = formatRemovedWorktree({
       id: "internal-id",
