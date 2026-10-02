@@ -87,8 +87,10 @@ name, it uses the destination folder name.
 Teleport starts Pi with the destination session without stealing focus, confirms the
 process, and saves the destination workspace, tab, and pane IDs. The destination waits
 for that handoff to commit before continuing the task. Only then does Teleport close the
-source tab and clean up its session file. If confirmation fails, it closes only the
-destination it prepared and keeps the source.
+source pane and clean up its session file. Other panels and tabs stay open. If the source
+pane is the last one in its workspace, Teleport first creates a shell tab in the original
+folder with `--no-focus`, so the workspace stays open. If confirmation fails, it closes
+only the destination it prepared and keeps the source.
 
 ## Managed worktrees
 

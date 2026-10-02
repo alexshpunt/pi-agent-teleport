@@ -8,7 +8,7 @@ import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 
 
-import { createManagedWorktree, prepareHerdrDestination, readState, reconcileState, removeManagedWorktree, writeState, type Resource } from "./core.ts";
+import { createManagedWorktree, prepareHerdrDestination, preserveHerdrSourceWorkspace, readState, reconcileState, removeManagedWorktree, writeState, type Resource } from "./core.ts";
 import { getHerdrContext, runHerdr, type HerdrContext } from "./herdr.ts";
 
 function dataDir(sessionId: string): string { return join(process.env.PI_CODING_AGENT_DIR ?? join(process.env.HOME ?? homedir(), ".pi", "agent"), "teleport", sessionId); }
@@ -34,11 +34,11 @@ async function waitForDestination(context: HerdrContext, pane: string, session: 
   }
   throw new Error("Timed out confirming the destination Pi process.");
 }
-/** Build the detached command that closes the source tab before cleaning its session file. */
-export function buildSourceTabCleanup(tabId: string, sourcePid: number, sessionFile: string): string {
+/** Build the detached command that closes only the source pane before cleaning its session file. */
+export function buildSourcePaneCleanup(paneId: string, sourcePid: number, sessionFile: string): string {
   return [
     "sleep 0.25",
-    `herdr tab close ${quote(tabId)} >/dev/null 2>&1 || true`,
+    `herdr pane close ${quote(paneId)} >/dev/null 2>&1 || true`,
     "i=0",
     `while kill -0 ${sourcePid} 2>/dev/null && [ "$i" -lt 50 ]; do i=$((i + 1)); sleep 0.1; done`,
     `rm -f -- ${quote(sessionFile)}`,
@@ -50,8 +50,9 @@ export function formatRemovedWorktree(resource: Resource): string {
   return `Removed worktree ${resource.path}\nBranch: ${resource.branch}`;
 }
 
-async function scheduleSourceCleanup(pi: ExtensionAPI, tabId: string, sessionFile: string): Promise<void> {
-  const cleanup = buildSourceTabCleanup(tabId, process.pid, sessionFile);
+async function scheduleSourceCleanup(pi: ExtensionAPI, context: HerdrContext, cwd: string, sessionFile: string): Promise<void> {
+  preserveHerdrSourceWorkspace(context, cwd);
+  const cleanup = buildSourcePaneCleanup(context.paneId, process.pid, sessionFile);
   const launcher = `if command -v setsid >/dev/null 2>&1; then setsid sh -c ${quote(cleanup)} >/dev/null 2>&1 < /dev/null & else nohup sh -c ${quote(cleanup)} >/dev/null 2>&1 < /dev/null & fi`;
   const result = await pi.exec('sh', ['-lc', launcher], { timeout: 5_000 });
   if (result.code !== 0) throw new Error(result.stderr || result.stdout || 'Failed to schedule source cleanup.');
@@ -96,8 +97,8 @@ export default function teleport(pi: ExtensionAPI) {
         throw error;
       }
       // A confirmed destination must never be rolled back if source cleanup fails.
-      try { await scheduleSourceCleanup(pi, context.tabId, source); }
-      catch (error) { notify(ctx, `Destination is running. Could not close source tab ${context.tabId}: ${String(error)}`, "error"); }
+      try { await scheduleSourceCleanup(pi, context, sourceCwd, source); }
+      catch (error) { notify(ctx, `Destination is running. Could not close source pane ${context.paneId}: ${String(error)}`, "error"); }
       ctx.shutdown();
       return;
     }

@@ -2,9 +2,9 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { prepareHerdrDestination } from "./core.ts";
+import { prepareHerdrDestination, preserveHerdrSourceWorkspace } from "./core.ts";
 import { runHerdr, isHerdrShell, type HerdrContext } from "./herdr.ts";
-import teleport, { buildSourceTabCleanup, formatRemovedWorktree } from "./index.ts";
+import teleport, { buildSourcePaneCleanup, formatRemovedWorktree } from "./index.ts";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 vi.mock("./herdr.ts", async (original) => ({
@@ -97,11 +97,49 @@ describe("Herdr destination routing", () => {
   });
 });
 describe("Herdr handoff", () => {
-  test("closes the source tab without waiting for the old process to exit", () => {
-    const cleanup = buildSourceTabCleanup("tab-123", 42, "/sessions/source.jsonl");
+  test("closes only the source pane before waiting for the old process to exit", () => {
+    const cleanup = buildSourcePaneCleanup("pane-123", 42, "/sessions/source.jsonl");
+    expect(cleanup).toContain("herdr pane close 'pane-123'");
+    expect(cleanup).not.toContain("herdr tab close");
+    expect(cleanup.indexOf("herdr pane close")).toBeLessThan(cleanup.indexOf("kill -0"));
+  });
 
-    expect(cleanup).toContain("herdr tab close 'tab-123'");
-    expect(cleanup.indexOf("herdr tab close")).toBeLessThan(cleanup.indexOf("kill -0"));
+  test("creates a background shell before removing the last source pane", () => {
+    vi.mocked(runHerdr).mockReturnValue({ panes: [{ pane_id: caller.paneId, tab_id: caller.tabId, workspace_id: caller.workspaceId }] });
+    preserveHerdrSourceWorkspace(caller, "/original");
+    expect(runHerdr).toHaveBeenLastCalledWith(caller, ["tab", "create", "--workspace", "w1", "--cwd", "/original", "--label", "shell", "--no-focus"]);
+  });
+
+  test.each(["w1:t1", "w1:t2"])("keeps other panels in tab %s without adding a shell", (tabId) => {
+    vi.mocked(runHerdr).mockReturnValue({ panes: [
+      { pane_id: caller.paneId, tab_id: caller.tabId, workspace_id: "w1" },
+      { pane_id: "w1:p2", tab_id: tabId, workspace_id: "w1" },
+    ] });
+    preserveHerdrSourceWorkspace(caller, "/original");
+    expect(runHerdr).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not treat a pane in another workspace as a source companion", () => {
+    vi.mocked(runHerdr).mockReturnValue({ panes: [
+      { pane_id: caller.paneId, workspace_id: "w1" },
+      { pane_id: "w2:p1", workspace_id: "w2" },
+    ] });
+    preserveHerdrSourceWorkspace(caller, "/original");
+    expect(runHerdr).toHaveBeenCalledTimes(2);
+  });
+
+  test("refuses cleanup when the source pane is missing", () => {
+    vi.mocked(runHerdr).mockReturnValue({ panes: [] });
+    expect(() => preserveHerdrSourceWorkspace(caller, "/original")).toThrow("source pane");
+    expect(runHerdr).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not continue cleanup if creating the replacement shell fails", () => {
+    vi.mocked(runHerdr).mockImplementation((_context, args) => {
+      if (args[0] === "tab") throw new Error("Shell creation failed");
+      return { panes: [{ pane_id: caller.paneId, workspace_id: "w1" }] };
+    });
+    expect(() => preserveHerdrSourceWorkspace(caller, "/original")).toThrow("Shell creation failed");
   });
 });
 

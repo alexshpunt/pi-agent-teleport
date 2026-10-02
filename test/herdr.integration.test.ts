@@ -2,9 +2,11 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, expect, test } from "vitest";
-import { createManagedWorktree, prepareHerdrDestination, readState, removeManagedWorktree } from "../src/core.ts";
+import { createManagedWorktree, prepareHerdrDestination, preserveHerdrSourceWorkspace, readState, removeManagedWorktree } from "../src/core.ts";
 import { herdrLocation, runHerdr, type HerdrContext } from "../src/herdr.ts";
+import { buildSourcePaneCleanup } from "../src/index.ts";
 
+// Use a named server so no experiment can change the user's layout or focus.
 let available = true;
 try { execFileSync("herdr", ["--version"], { stdio: "ignore" }); } catch { available = false; }
 let server: ChildProcess | undefined;
@@ -91,4 +93,36 @@ test.skipIf(!available)("Herdr creates, groups, reuses, reopens, and removes an 
   expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: fromLinked.path, encoding: "utf8" })).toBe(execFileSync("git", ["rev-parse", "HEAD"], { cwd: source.path, encoding: "utf8" }));
   removeManagedWorktree({ repo: source.path, id: fromLinked.id, stateDir, herdr: context });
   removeManagedWorktree({ repo, id: source.id, stateDir, herdr: context });
+});
+
+test.skipIf(!available).each(["last pane", "sibling pane", "sibling tab"])("source cleanup preserves the workspace and user focus with %s", (layout) => {
+  const created = runHerdr(context, ["workspace", "create", "--cwd", repo, "--no-focus"]);
+  const source = herdrLocation(context, created);
+  let companionId: string | undefined;
+  if (layout === "sibling pane") {
+    companionId = runHerdr(context, ["pane", "split", source.paneId, "--direction", "right", "--cwd", repo, "--no-focus"]).pane.pane_id;
+  } else if (layout === "sibling tab") {
+    companionId = runHerdr(context, ["tab", "create", "--workspace", source.workspaceId, "--cwd", repo, "--no-focus"]).root_pane.pane_id;
+  }
+  const focus = () => runHerdr(context, ["workspace", "list"]).workspaces
+    .filter((workspace: any) => workspace.focused)
+    .map((workspace: any) => [workspace.workspace_id, workspace.active_tab_id,
+      runHerdr(context, ["pane", "list", "--workspace", workspace.workspace_id]).panes
+        .filter((pane: any) => pane.focused).map((pane: any) => pane.pane_id),
+    ]);
+  const before = focus();
+  expect(before).toHaveLength(1);
+  expect(before[0][0]).not.toBe(source.workspaceId);
+  preserveHerdrSourceWorkspace(source, repo);
+  execFileSync("sh", ["-c", buildSourcePaneCleanup(source.paneId, 2147483647, join(directory, "old-session.jsonl"))], { env, stdio: "ignore" });
+  const remaining = runHerdr(context, ["pane", "list", "--workspace", source.workspaceId]).panes;
+  expect(remaining).toHaveLength(1);
+  expect(remaining[0].pane_id).not.toBe(source.paneId);
+  if (companionId) expect(remaining[0].pane_id).toBe(companionId);
+  else {
+    expect(runHerdr(context, ["tab", "get", remaining[0].tab_id]).tab.label).toBe("shell");
+    expect(remaining[0].cwd).toBe(repo);
+  }
+  expect(focus()).toEqual(before);
+  runHerdr(context, ["workspace", "close", source.workspaceId]);
 });
