@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.5 - 2026-10-02
+
+- Close only the source agent pane during teleport, keeping other panels and tabs open.
+- Create a background shell before closing the last source pane, so its Herdr workspace stays open.
+
 ## 0.2.4 - 2026-10-02
 
 - Start destination Pi processes with `--approve` to avoid project-trust prompts during teleport.
