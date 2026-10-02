@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.3 - 2026-10-02
 
 - Name Herdr destination tabs after the Pi session, or the destination folder when unnamed.
 
