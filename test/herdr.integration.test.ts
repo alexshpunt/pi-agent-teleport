@@ -126,3 +126,29 @@ test.skipIf(!available).each(["last pane", "sibling pane", "sibling tab"])("sour
   expect(focus()).toEqual(before);
   runHerdr(context, ["workspace", "close", source.workspaceId]);
 });
+
+test.skipIf(!available).each([
+  ["linked", "last pane"], ["linked", "sibling pane"], ["linked", "sibling tab"],
+  ["plain", "last pane"], ["plain", "sibling pane"], ["plain", "sibling tab"],
+])("source cleanup leaves no empty %s workspace with %s", (kind, layout) => {
+  const name = `${kind}-${layout.replaceAll(" ", "-")}`;
+  const path = join(directory, name);
+  const resource = kind === "linked" ? createManagedWorktree({ repo, branch: name, path, stateDir: join(directory, name + "-state"), herdr: context }) : undefined;
+  if (!resource) mkdirSync(path);
+  const source = resource?.herdr || herdrLocation(context, runHerdr(context, ["workspace", "create", "--cwd", path, "--no-focus"]));
+  let companionId: string | undefined;
+  if (layout === "sibling pane") companionId = runHerdr(context, ["pane", "split", source.paneId, "--direction", "right", "--cwd", path, "--no-focus"]).pane.pane_id;
+  if (layout === "sibling tab") companionId = runHerdr(context, ["tab", "create", "--workspace", source.workspaceId, "--cwd", path, "--no-focus"]).root_pane.pane_id;
+  const focused = () => runHerdr(context, ["workspace", "list"]).workspaces.filter((workspace: any) => workspace.focused).map((workspace: any) => workspace.workspace_id);
+  const before = focused();
+  preserveHerdrSourceWorkspace(source, path);
+  execFileSync("sh", ["-c", buildSourcePaneCleanup(source.paneId, 2147483647, join(directory, "old-session.jsonl"))], { env, stdio: "ignore" });
+  const remaining = runHerdr(context, ["workspace", "list"]).workspaces.find((workspace: any) => workspace.workspace_id === source.workspaceId);
+  if (companionId) {
+    expect(remaining).toBeDefined();
+    expect(runHerdr(context, ["pane", "list", "--workspace", source.workspaceId]).panes.map((pane: any) => pane.pane_id)).toEqual([companionId]);
+    runHerdr(context, ["workspace", "close", source.workspaceId]);
+  } else expect(remaining).toBeUndefined();
+  expect(focused()).toEqual(before);
+  if (resource) execFileSync("git", ["worktree", "remove", path], { cwd: repo, stdio: "ignore" });
+});
