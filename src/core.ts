@@ -63,13 +63,20 @@ function primaryRepo(repo: string): string {
   return canonical(first.slice("worktree ".length));
 }
 
-/** Keep the source workspace open when its last agent pane leaves. */
+/** Preserve only a primary checkout when its last agent pane leaves; never add shells to worktrees or plain directories. */
 export function preserveHerdrSourceWorkspace(context: HerdrContext, cwd: string): void {
   const panes = runHerdr(context, ["pane", "list", "--workspace", context.workspaceId]).panes;
   if (!Array.isArray(panes) || !panes.some((pane) => pane.pane_id === context.paneId && pane.workspace_id === context.workspaceId)) {
     throw new Error("Herdr source pane is no longer in its workspace.");
   }
   if (panes.some((pane) => pane.workspace_id === context.workspaceId && pane.pane_id !== context.paneId)) return;
+  const checkout = runHerdr(context, ["workspace", "get", context.workspaceId]).workspace?.worktree;
+  let primary = checkout?.is_linked_worktree === false;
+  if (!checkout) {
+    // Herdr may not have detected Git metadata yet, especially for manually opened workspaces.
+    try { primary = canonical(git(cwd, ["rev-parse", "--show-toplevel"])) === primaryRepo(cwd); } catch { /* Non-Git directories need no replacement shell. */ }
+  }
+  if (!primary) return;
   runHerdr(context, ["tab", "create", "--workspace", context.workspaceId, "--cwd", cwd, "--label", "shell", "--no-focus"]);
 }
 /** Prepare a safe destination tab named after the Pi session, or its folder if unnamed. */
