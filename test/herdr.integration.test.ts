@@ -1,6 +1,7 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { createManagedWorktree, prepareHerdrDestination, preserveHerdrSourceWorkspace, readState, removeManagedWorktree } from "../src/core.ts";
 import { herdrLocation, runHerdr, type HerdrContext } from "../src/herdr.ts";
@@ -22,8 +23,8 @@ delete env.HERDR_PANE_ID;
 
 beforeAll(async () => {
   if (!available) return;
-  mkdirSync(resolve(".tmp"), { recursive: true });
-  directory = mkdtempSync(resolve(".tmp/herdr-test-"));
+  // Keep non-Git fixtures outside the enclosing checkout as well as the fixture repository.
+  directory = mkdtempSync(join(tmpdir(), "teleport-herdr-test-"));
   repo = join(directory, "repo");
   mkdirSync(repo);
   const git = (args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "ignore" });
