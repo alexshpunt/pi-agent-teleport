@@ -104,10 +104,23 @@ describe("Herdr handoff", () => {
     expect(cleanup.indexOf("herdr pane close")).toBeLessThan(cleanup.indexOf("kill -0"));
   });
 
-  test("creates a background shell before removing the last source pane", () => {
-    vi.mocked(runHerdr).mockReturnValue({ panes: [{ pane_id: caller.paneId, tab_id: caller.tabId, workspace_id: caller.workspaceId }] });
+  test("preserves the last pane's primary checkout workspace", () => {
+    vi.mocked(runHerdr).mockReturnValue({ workspace: { worktree: { is_linked_worktree: false } }, panes: [{ pane_id: caller.paneId, tab_id: caller.tabId, workspace_id: caller.workspaceId }] });
     preserveHerdrSourceWorkspace(caller, "/original");
     expect(runHerdr).toHaveBeenLastCalledWith(caller, ["tab", "create", "--workspace", "w1", "--cwd", "/original", "--label", "shell", "--no-focus"]);
+  });
+
+  test.each([true, undefined])("does not leave a shell in a linked or non-Git workspace (%s)", (linked) => {
+    vi.mocked(runHerdr).mockReturnValue({ workspace: { worktree: linked === undefined ? undefined : { is_linked_worktree: linked } }, panes: [{ pane_id: caller.paneId, workspace_id: caller.workspaceId }] });
+    preserveHerdrSourceWorkspace(caller, "/nonexistent-teleport-fixture");
+    expect(runHerdr).not.toHaveBeenCalledWith(caller, expect.arrayContaining(["tab", "create"]));
+  });
+
+  test("recognizes a primary checkout before Herdr has detected its Git metadata", () => {
+    const path = checkout();
+    vi.mocked(runHerdr).mockReturnValue({ workspace: {}, panes: [{ pane_id: caller.paneId, workspace_id: caller.workspaceId }] });
+    preserveHerdrSourceWorkspace(caller, path);
+    expect(runHerdr).toHaveBeenLastCalledWith(caller, ["tab", "create", "--workspace", "w1", "--cwd", path, "--label", "shell", "--no-focus"]);
   });
 
   test.each(["w1:t1", "w1:t2"])("keeps other panels in tab %s without adding a shell", (tabId) => {
@@ -123,9 +136,9 @@ describe("Herdr handoff", () => {
     vi.mocked(runHerdr).mockReturnValue({ panes: [
       { pane_id: caller.paneId, workspace_id: "w1" },
       { pane_id: "w2:p1", workspace_id: "w2" },
-    ] });
+    ], workspace: { worktree: { is_linked_worktree: false } } });
     preserveHerdrSourceWorkspace(caller, "/original");
-    expect(runHerdr).toHaveBeenCalledTimes(2);
+    expect(runHerdr).toHaveBeenCalledTimes(3);
   });
 
   test("refuses cleanup when the source pane is missing", () => {
@@ -137,7 +150,7 @@ describe("Herdr handoff", () => {
   test("does not continue cleanup if creating the replacement shell fails", () => {
     vi.mocked(runHerdr).mockImplementation((_context, args) => {
       if (args[0] === "tab") throw new Error("Shell creation failed");
-      return { panes: [{ pane_id: caller.paneId, workspace_id: "w1" }] };
+      return { workspace: { worktree: { is_linked_worktree: false } }, panes: [{ pane_id: caller.paneId, workspace_id: "w1" }] };
     });
     expect(() => preserveHerdrSourceWorkspace(caller, "/original")).toThrow("Shell creation failed");
   });
