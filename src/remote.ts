@@ -69,6 +69,14 @@ export function validateReady(expected: ReadyIdentity, actual: ReadyIdentity & {
   if (!Number.isSafeInteger(actual.pid) || actual.pid <= 0) throw new Error("Destination readiness has no valid Pi process.");
 }
 
+/** Match the authenticated callback to its native foreground process; Pi may replace its visible argv with its process title. */
+export function hasSessionProcess(processes: Array<{ pid: number; cwd?: string; argv?: string[] }> | undefined, pid: number, cwd: string, sessionFile: string): boolean {
+  return !!processes?.some((process) => {
+    if (process.pid !== pid || process.cwd !== cwd) return false;
+    const argument = process.argv?.indexOf("--session") ?? -1;
+    return argument < 0 || process.argv?.[argument + 1] === sessionFile;
+  });
+}
 /** Send one bounded authenticated message over an owned Unix socket. */
 export function requestController(route: Pick<ReturnRoute, "socket" | "token">, payload: Record<string, unknown>, timeout = HANDOFF_TIMEOUT): Promise<any> {
   return new Promise((resolve, reject) => {

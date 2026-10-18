@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mergeMachineResources, prepareHerdrArrival, preserveHerdrSourceWorkspace, readState, writeState, type TeleportState } from "./core.ts";
 import { runHerdr, type HerdrContext } from "./herdr.ts";
-import { agentDirectory, HANDOFF_TIMEOUT, MAX_PACKET, qualifyLocation, relocateSession, runtimeFingerprint, UnknownRemoteOutcome, shellQuote, sshOptions, validateReady, type ReadyIdentity, type RemoteMove, type ReturnRoute } from "./remote.ts";
+import { agentDirectory, HANDOFF_TIMEOUT, MAX_PACKET, hasSessionProcess, qualifyLocation, relocateSession, runtimeFingerprint, UnknownRemoteOutcome, shellQuote, sshOptions, validateReady, type ReadyIdentity, type RemoteMove, type ReturnRoute } from "./remote.ts";
 
 const implementation = runtimeFingerprint();
 type Arrival = {
@@ -187,7 +187,7 @@ async function controller(config: string): Promise<void> {
           const info = pending.remote
             ? JSON.parse(execFileSync("herdr", ["--machine", move.machine, "pane", "process-info", "--pane", pending.expected.paneId], { encoding: "utf8", timeout: 15_000 })).result?.process_info
             : runHerdr(move.herdr, ["pane", "process-info", "--pane", pending.expected.paneId]).process_info;
-          if (!info?.foreground_processes?.some((process: any) => process.pid === packet.pid && process.argv?.includes(pending!.expected.sessionFile))) throw new Error("The expected destination Pi is not running in its owned Herdr pane.");
+          if (!hasSessionProcess(info?.foreground_processes, packet.pid, pending.expected.cwd, pending.expected.sessionFile)) throw new Error("The expected destination Pi is not running in its owned Herdr pane.");
           pending.resolve();
           pending = undefined;
           socket.end(`${JSON.stringify({ ok: true })}\n`);
@@ -217,7 +217,7 @@ async function controller(config: string): Promise<void> {
         if (existsSync(move.sourceSession)) {
           try {
             const source = runHerdr(move.herdr, ["pane", "process-info", "--pane", move.herdr.paneId]).process_info;
-            if (source?.foreground_processes?.some((process: any) => process.pid === move.sourcePid && process.argv?.includes(move.sourceSession))) {
+            if (hasSessionProcess(source?.foreground_processes, move.sourcePid, move.sourceCwd, move.sourceSession)) {
               preserveHerdrSourceWorkspace(move.herdr, move.sourceCwd);
               runHerdr(move.herdr, ["pane", "close", move.herdr.paneId]);
               const deadline = Date.now() + 5_000;
