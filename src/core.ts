@@ -3,13 +3,14 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { assertHerdrContext, herdrLocation, isHerdrShell, runHerdr, sameHerdrConnection, type HerdrContext, type HerdrLocation } from "./herdr.ts";
+import type { ReturnRoute } from "./remote.ts";
 
 export const STATE_VERSION = 1 as const;
 export type Location = { cwd: string; sessionFile: string; herdr?: HerdrLocation };
 export type HistoryEntry = { from: string; to: string; at: number; status: "completed" | "reconciled"; fromHerdr?: HerdrLocation; toHerdr?: HerdrLocation };
-export type Resource = { id: string; owner: "pi-agent-teleport"; kind: "git-worktree"; repo: string; path: string; branch: string; createdAt: number; herdr?: HerdrLocation & { parentWorkspaceId?: string } };
+export type Resource = { id: string; owner: "pi-agent-teleport"; kind: "git-worktree"; repo: string; path: string; branch: string; createdAt: number; machine?: string; herdr?: HerdrLocation & { parentWorkspaceId?: string } };
 export type Transition = { id: string; phase: "prepared" | "destination-started"; from: string; to: string; sourceSession: string; destinationSession: string; startedAt: number };
-export type TeleportState = { version: 1; active?: Location; history: HistoryEntry[]; resources: Record<string, Resource>; transition?: Transition };
+export type TeleportState = { version: 1; active?: Location; history: HistoryEntry[]; resources: Record<string, Resource>; transition?: Transition; machine?: string; returnRoute?: ReturnRoute; pendingRemote?: { id: string; receipt: string } };
 
 const emptyState = (): TeleportState => ({ version: STATE_VERSION, history: [], resources: {} });
 const stateFile = (dir: string) => join(dir, "state.json");
@@ -47,12 +48,19 @@ export function reconcileState(dir: string): TeleportState {
     state.history.push({ from: t.from, to: state.active?.cwd ?? t.to, at: Date.now(), status: "reconciled" });
     delete state.transition;
   }
-  if (state.active && !existsSync(state.active.sessionFile)) delete state.active;
-  for (const [id, resource] of Object.entries(state.resources)) if (!existsSync(resource.path)) delete state.resources[id];
+  if (state.active && !state.active.cwd.startsWith("ssh://") && !existsSync(state.active.sessionFile)) delete state.active;
+  for (const [id, resource] of Object.entries(state.resources)) if (resource.machine === state.machine && !existsSync(resource.path)) delete state.resources[id];
   writeState(dir, state);
   return state;
 }
 
+/** Preserve other machines' ownership while accepting current resources and deletions from the returning machine. */
+export function mergeMachineResources(original: Record<string, Resource>, returned: Record<string, Resource>, machine: string): Record<string, Resource> {
+  return {
+    ...Object.fromEntries(Object.entries(original).filter(([, resource]) => resource.machine !== machine)),
+    ...Object.fromEntries(Object.entries(returned).filter(([, resource]) => resource.machine === machine)),
+  };
+}
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
@@ -80,8 +88,18 @@ export function preserveHerdrSourceWorkspace(context: HerdrContext, cwd: string)
   runHerdr(context, ["tab", "create", "--workspace", context.workspaceId, "--cwd", cwd, "--label", "shell", "--no-focus"]);
 }
 /** Prepare a safe destination tab named after the Pi session, or its folder if unnamed. */
-export function prepareHerdrDestination(context: HerdrContext, target: string, owned?: Resource["herdr"], sessionName?: string): { location: HerdrLocation; rollback: () => void } {
+export function prepareHerdrDestination(context: HerdrContext, target: string, owned?: Resource["herdr"], sessionName?: string): PreparedDestination {
   assertHerdrContext(context);
+  return prepareDestination(context, target, owned, sessionName);
+}
+
+/** Prepare an arrival through a verified connection, without reusing any caller's pane. */
+export function prepareHerdrArrival(context: HerdrContext, target: string, sessionName?: string): PreparedDestination {
+  return prepareDestination(context, target, undefined, sessionName, true);
+}
+
+type PreparedDestination = { location: HerdrLocation; rollback: () => void; rollbackArgs: string[] };
+function prepareDestination(context: HerdrContext, target: string, owned?: Resource["herdr"], sessionName?: string, separateWorkspace = false): PreparedDestination {
   const label = sessionName || basename(target) || target;
   let checkout = false;
   try { checkout = canonical(git(target, ["rev-parse", "--show-toplevel"])) === canonical(target); } catch { /* Plain directories use the current workspace. */ }
@@ -90,18 +108,24 @@ export function prepareHerdrDestination(context: HerdrContext, target: string, o
     const location = herdrLocation(context, opened, target);
     const ownShell = owned && sameHerdrConnection(context, owned) && owned.paneId === location.paneId && opened.workspace.pane_count === 1;
     if ((!opened.already_open || ownShell) && isHerdrShell(context, location.paneId)) {
-      const rollback = () => { runHerdr(context, opened.already_open ? ["tab", "close", location.tabId] : ["workspace", "close", location.workspaceId]); };
+      const rollbackArgs = opened.already_open ? ["tab", "close", location.tabId] : ["workspace", "close", location.workspaceId];
+      const rollback = () => { runHerdr(context, rollbackArgs); };
       try { runHerdr(context, ["tab", "rename", location.tabId, label]); }
       catch (error) { try { rollback(); } catch {} throw error; }
-      return { location, rollback };
+      return { location, rollback, rollbackArgs };
     }
     const tab = runHerdr(context, ["tab", "create", "--workspace", location.workspaceId, "--cwd", target, "--label", label, "--no-focus"]);
     const next = herdrLocation(context, { ...tab, workspace: opened.workspace });
-    return { location: next, rollback: () => { runHerdr(context, ["tab", "close", next.tabId]); } };
+    return { location: next, rollback: () => { runHerdr(context, ["tab", "close", next.tabId]); }, rollbackArgs: ["tab", "close", next.tabId] };
+  }
+  if (separateWorkspace) {
+    const created = runHerdr(context, ["workspace", "create", "--cwd", target, "--label", label, "--no-focus"]);
+    const location = herdrLocation(context, created);
+    return { location, rollback: () => { runHerdr(context, ["workspace", "close", location.workspaceId]); }, rollbackArgs: ["workspace", "close", location.workspaceId] };
   }
   const tab = runHerdr(context, ["tab", "create", "--workspace", context.workspaceId, "--cwd", target, "--label", label, "--no-focus"]);
   const location = herdrLocation(context, { ...tab, workspace: { workspace_id: context.workspaceId } });
-  return { location, rollback: () => { runHerdr(context, ["tab", "close", location.tabId]); } };
+  return { location, rollback: () => { runHerdr(context, ["tab", "close", location.tabId]); }, rollbackArgs: ["tab", "close", location.tabId] };
 }
 /** Create a linked checkout with Git or Herdr, then save its actual path and ownership. */
 export function createManagedWorktree(input: { repo: string; branch: string; base?: string; path?: string; stateDir: string; herdr?: HerdrContext }): Resource {
@@ -131,6 +155,7 @@ export function createManagedWorktree(input: { repo: string; branch: string; bas
   }
   const resource: Resource = { id, owner: "pi-agent-teleport", kind: "git-worktree", repo, path, branch: input.branch, createdAt: Date.now(), ...(herdr ? { herdr } : {}) };
   const state = readState(input.stateDir);
+  if (state.machine) resource.machine = state.machine;
   state.resources[id] = resource;
   writeState(input.stateDir, state);
   if (input.herdr && resource.herdr) {
@@ -151,6 +176,7 @@ export function removeManagedWorktree(input: { repo: string; id: string; stateDi
   const state = readState(input.stateDir);
   const resource = state.resources[input.id];
   if (!resource || resource.owner !== "pi-agent-teleport") throw new Error(`Resource ${input.id} is not owned by Teleport.`);
+  if (resource.machine !== state.machine) throw new Error("Return to the owning machine before removing this worktree.");
   if (canonical(input.repo) !== resource.repo) throw new Error("The owning repository does not match.");
   if (resource.herdr && (!input.herdr || !sameHerdrConnection(input.herdr, resource.herdr))) throw new Error("Return to the owning Herdr session before removing this worktree.");
   if (!existsSync(resource.path)) {
