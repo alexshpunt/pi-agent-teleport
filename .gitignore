@@ -1,4 +1,5 @@
 node_modules/
 .tmp/
+.pi/settings.json
 .agents/tmp/
 *.tgz
