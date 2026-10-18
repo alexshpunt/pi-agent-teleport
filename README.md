@@ -16,17 +16,8 @@
 </p>
 
 Pi normally lives in the directory where you started it. Teleport lets the agent move
-the running session to another directory, another repository, a fresh Git worktree, or a remote machine —
-and jump back when the job is done. The conversation continues and the session stays the same.
-
-```text
-✦ Agent teleport
-  /root/dev/pi/pi-worktrunk                ← from (blue)
-  └─→ /root/dev/pi/pi-agent-teleport       ← to (orange)
-```
-
-The agent keeps working after the move. You see one compact route row, not a new user
-message.
+to another directory, repository, Git worktree, or remote machine and jump back when
+the job is done. The conversation continues in the same session.
 
 ## Install
 
@@ -34,9 +25,11 @@ message.
 pi install npm:pi-agent-teleport
 ```
 
+Requires Pi 0.80 or newer, Node.js 22.19 or newer, and a saved Pi session.
+
 ## Use it
 
-Ask the agent to move or isolate the work:
+Ask the agent in plain language:
 
 ```text
 Move this session to /root/dev/my-other-repo and continue there.
@@ -44,159 +37,59 @@ Move this session to /root/dev/my-other-repo and continue there.
 Create an isolated worktree for the login fix, move into it, and continue the task.
 
 Go back to the previous repository and remove the worktree you created.
+
+Show where this session has been.
 ```
 
-The agent calls Teleport itself. You do not need to remember a slash command or tool syntax. Teleport requires a persisted Pi session.
+The agent handles the move. There are no slash commands to remember.
 
-## What it gives the agent
-
-Teleport exposes a single `teleport` tool. There are no user-facing slash commands.
-
-| Action    | Purpose |
-|-----------|---------|
-| `jump`    | Move the session to an existing local or remote directory. |
-| `back`    | Move the session to the previous location. |
-| `history` | List completed moves. |
-| `create`  | Create a linked Git worktree owned by Teleport. |
-| `remove`  | Remove a clean worktree recorded as Teleport-owned. |
-
-Typical flow:
-
-```text
-create worktree → jump into it → do the work → back → remove the worktree
-```
-
-## How a move works
-
-1. Teleport writes a `prepared` transition to durable state.
-2. It builds the destination session: same session id, updated `cwd`, full conversation.
-3. It switches Pi to the destination session.
-4. Only then it removes the source session file.
-5. A hidden continuation starts the next agent turn inside the destination context.
-
-If step 3 is cancelled or fails, Teleport removes the prepared destination and keeps the
-source untouched.
-
-Inside Herdr, Teleport opens Git checkouts through `herdr worktree open`. They appear
-as workspaces grouped with their parent repository in the sidebar. It reuses the idle
-shell created by `create`, or makes a separate tab when a workspace already has other
-work. Plain directories still use a new tab in the current workspace.
-The destination tab uses the Pi session name, without a prefix. If the session has no
-name, it uses the destination folder name.
-
-Teleport starts Pi with the destination session without stealing focus, confirms the
-process, and saves the destination workspace, tab, and pane IDs. The destination waits
-for that handoff to commit before continuing the task. Only then does Teleport close the
-source pane and clean up its session file. Other panels and tabs stay open. If the source
-pane is the last one in a primary-checkout workspace, Teleport first creates a shell
-tab in the original folder with `--no-focus`, so the primary workspace stays open.
-Linked-worktree and plain-directory workspaces close when their last pane leaves;
-Teleport does not leave a replacement shell there. If confirmation fails, it closes
-only the destination it prepared and keeps the source.
+Local moves work with or without Herdr. In Herdr, Git checkouts appear as workspaces
+grouped with their repository. Other agents and unrelated panes stay open.
 
 ## Remote machines
-
-Ask the agent to move to a trusted SSH target and return:
 
 ```text
 Move this session to ssh://buildbox/home/me/project, confirm where you are, then come back.
 ```
 
-The agent uses `jump` with that address and `back` for the recorded return journey.
-The conversation and persisted session ID follow it. This starts Pi on the destination;
-it is not a local agent running commands over SSH.
+The agent really runs on the remote machine after moving; it is not just sending
+commands over SSH. The conversation and session identity follow it.
 
 Before moving:
 
-- Install the same Teleport build on both machines. A missing or different build blocks
-  the move so the destination cannot strand the agent without its return tool.
+- Install the same Teleport build on both machines. Pi versions may differ; Teleport
+  does not upgrade or downgrade either installation.
 - Run Herdr on both machines. Add the destination as one enabled saved Herdr machine
-  using the same SSH alias as the Teleport address.
-- Establish key-based SSH access and host-key trust. Put ports, usernames and connection
-  options in OpenSSH config rather than the address.
-- Configure the destination's own Pi model and authentication. Teleport does not copy
-  credentials, settings, other extensions, or repository files.
+  using the same SSH alias as the address.
+- Set up key-based SSH access and host-key trust. Put connection options in SSH config.
+  The SSH server must allow Unix-socket forwarding.
+- Prepare the destination directory and configure Pi there with its own model and
+  authentication. Teleport does not copy your repository, credentials, settings, or
+  other extensions.
 
-Pi versions may differ. Teleport reports the difference and attempts the move without
-upgrading or downgrading either installation. It checks the destination's loaded
-Teleport, session identity, directory, authentication and owned Herdr pane before
-releasing its continuation and retiring the source.
+Keep the original computer awake and connected until the agent returns. Brief
+disconnections can recover, but a prolonged connection loss may need manual recovery.
 
-A detached controller keeps a private Unix-socket return channel open over SSH from
-the original computer. The VPS does not need an SSH key for that computer. No public
-port or raw Herdr control socket is exposed. Keep the original computer awake until
-the agent returns. Brief disconnections get up to three local-origin reconnection
-attempts; the remote session is retained if recovery fails.
+If a move is reported as unconfirmed, ask the agent to inspect it before retrying.
+A timeout does not necessarily mean the move failed.
 
-An unconfirmed handoff stops automatic continuation on its source and records an
-inspection receipt. Inspect the recorded destination and receipt before retrying;
-do not assume that a timeout means nothing happened. History and worktree ownership
-keep machine identity, even when both hosts have the same filesystem paths.
+## Worktrees and safety
 
-## Managed worktrees
+Ask Teleport to create a worktree when you want a separate checkout for a task.
+It only removes worktrees it created and recorded. Removal requires a clean checkout
+with no extra panes or running commands; there is no force option. Git refuses to
+delete an unmerged branch.
 
-Outside Herdr, `create` records ownership before running Git. Inside Herdr, it uses
-`herdr worktree create` and records the returned checkout path and workspace IDs.
-Herdr chooses its configured checkout directory unless you supply `path`. Creating
-from a linked checkout still uses that checkout’s commit as the default base.
+Changes must be committed or otherwise handled before removal. A worktree separates
+checkouts; it is not a security sandbox.
 
-`remove` requires all of these:
+Teleport preserves the conversation, not unsaved in-memory state inside extensions.
+Those extensions need their own way to restore state after a move.
 
-- a matching Teleport ownership record,
-- a matching Git common directory,
-- a clean worktree.
+## Technical documentation
 
-For a Herdr-created checkout, removal also requires the owning Herdr connection and a
-workspace containing only its idle shell. A workspace closed by `back` is reopened
-without focus before removal. Extra panes or running commands block removal; Teleport
-never kills neighboring work. Herdr removes the workspace together with the checkout.
-
-Teleport never deletes an unrecorded resource, and it has no force option. After removing the worktree, Teleport asks Git to delete the branch with `git branch -d`.
-Git deletes a safely merged branch and refuses to delete an unmerged one.
-
-Create results show the path, branch, and `resourceId` needed for `remove`. The `history` result lists managed worktrees with their IDs, so you can recover an ID after moving. `remove` requires that ID and still checks ownership and cleanliness.
-
-## State and recovery
-
-State lives in `$PI_CODING_AGENT_DIR/teleport/<session-id>/state.json`. It holds a version,
-the active session, movement history, owned resources, and any in-flight transition.
-
-On session start Teleport reconciles that state:
-
-- a `prepared` transition keeps the source, even when the destination file already exists;
-- a confirmed destination becomes the active session;
-- local transitions are cleared, and missing local sessions or local resources are dropped;
-- resources belonging to another machine are kept until they can be checked on their owner.
-
-## Requirements
-
-- Pi 0.80 or newer.
-- Node.js 22.19 or newer.
-- Remote moves require OpenSSH Unix-socket forwarding and native Herdr on both machines.
-  Local moves still work without Herdr.
-- Herdr integration needs `HERDR_ENV=1`, `HERDR_PANE_ID`, `HERDR_TAB_ID`, and
-  `HERDR_WORKSPACE_ID`, plus the public `herdr` CLI with worktree commands. Teleport
-  verifies the live caller IDs before changing Herdr state. Missing environment values
-  use normal Git creation and in-process session switching. A valid but unreachable
-  Herdr connection fails explicitly rather than silently switching modes.
-
-## Limitations
-
-- Teleport cannot carry in-memory extension state. Extensions must restore state from Pi
-  session entries or from disk.
-- Pi exposes session replacement only to command contexts, so `jump` and `back` use a
-  private one-shot command as transport. Teleport dispatches it after `agent_settled`,
-  not while a prompt is running. It is plumbing, not a supported user API.
-- Dirty managed worktrees must be cleaned manually before removal.
-- A worktree is checkout isolation, not a security sandbox.
-
-## Development
-
-```bash
-npm test            # unit tests
-npm run typecheck   # TypeScript check
-npm run test:integration  # real Pi process test
-```
+See [handoff and recovery](docs/handoff.md) for tool actions, Herdr behavior,
+state storage, failure handling, and development commands.
 
 ## License
 
