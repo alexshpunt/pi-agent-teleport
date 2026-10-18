@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.6 - 2026-10-18
+
+- Move the same Pi session to a remote Herdr machine over SSH and return with its conversation intact.
+- Use destination-owned settings and authentication; allow different Pi versions without changing either installation.
+- Check destination Teleport readiness before retiring the source and preserve uncertain handoffs for inspection.
+- Avoid leaving replacement shells in departed worktree and plain-directory Herdr workspaces.
+- Keep the README user-facing and include the separate technical guide in the npm package.
+- Require Node.js 22.19 or newer.
+
 ## 0.2.5 - 2026-10-02
 
 - Close only the source agent pane during teleport, keeping other panels and tabs open.

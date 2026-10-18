@@ -1,7 +1,7 @@
 {
   "name": "pi-agent-teleport",
-  "version": "0.2.5",
-  "description": "Move a running Pi Coding Agent session between directories, repositories, and isolated Git worktrees",
+  "version": "0.2.6",
+  "description": "Move a running Pi Coding Agent session between directories, Git worktrees, and remote machines",
   "keywords": [
     "pi-package",
     "pi",
@@ -44,6 +44,7 @@
     "src/bridge.ts",
     "assets/agent-portal.webp",
     "assets/agent-portal-gallery.webp",
+    "docs/handoff.md",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"
