@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { assertHerdrContext, isHerdrShell, runHerdr, type HerdrContext } from "./herdr.ts";
-import { createManagedWorktree, readState, reconcileState, removeManagedWorktree, writeState } from "./core.ts";
+import { createManagedWorktree, mergeMachineResources, readState, reconcileState, removeManagedWorktree, writeState } from "./core.ts";
 
 vi.mock("./herdr.ts", async (original) => ({
   ...await original<typeof import("./herdr.ts")>(),
@@ -40,6 +40,25 @@ function repo() {
   return root;
 }
 
+test("return preserves local ownership and accepts remote updates and deletions", () => {
+  const resource = { id: "local", owner: "pi-agent-teleport" as const, kind: "git-worktree" as const, repo: "/repo", path: "/worktree", branch: "owned", createdAt: 1 };
+  const original = { local: resource, removed: { ...resource, id: "removed", machine: "vps" }, updated: { ...resource, id: "updated", machine: "vps", path: "/old" } };
+  const returned = { local: { ...resource, path: "/forged" }, updated: { ...resource, id: "updated", machine: "vps", path: "/new" } };
+  expect(mergeMachineResources(original, returned, "vps")).toEqual({ local: resource, updated: returned.updated });
+});
+test("reconciliation never prunes or removes resources belonging to another machine", () => {
+  mkdirSync(resolve(".tmp"), { recursive: true });
+  const stateDir = mkdtempSync(resolve(".tmp/machine-state-"));
+  fixtures.push(stateDir);
+  const state = readState(stateDir);
+  state.machine = "vps";
+  state.active = { cwd: "ssh://other/root/project", sessionFile: "/missing/on/this/host/session.jsonl" };
+  state.resources.foreign = { id: "foreign", owner: "pi-agent-teleport", kind: "git-worktree", repo: "/source/repo", path: "/source/worktree", branch: "owned", createdAt: 1 };
+  writeState(stateDir, state);
+  expect(reconcileState(stateDir).resources.foreign).toEqual(state.resources.foreign);
+  expect(readState(stateDir).active).toEqual(state.active);
+  expect(() => removeManagedWorktree({ repo: "/source/repo", id: "foreign", stateDir })).toThrow("owning machine");
+});
 describe("managed worktrees", () => {
   test("lets Herdr choose the path and saves its workspace and shell IDs", () => {
     const root = repo();

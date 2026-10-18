@@ -89,6 +89,27 @@ test("a failed queued teleport starts a new agent turn", async () => {
   expect(result.terminalOutput).not.toContain("Agent is already processing");
 });
 
+test("a real Pi process recognizes a remote destination without checking it as a local path", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "teleport-remote-requires-herdr-"));
+  workspaces.push(cwd);
+  const result = await new PiIntegrationTest({
+    testName: "teleport-remote-requires-herdr",
+    artifactsDir: testArtifactsDir(import.meta.filename),
+    cwd,
+    environment: { ...process.env, HERDR_ENV: "", HERDR_PANE_ID: "", HERDR_TAB_ID: "", HERDR_WORKSPACE_ID: "" },
+    extensions: [join(dirname(import.meta.filename), "..", "src", "index.ts")],
+    tools: ["teleport"],
+    rawMode: false,
+    conversation: [
+      assistantMessage([toolCall({ id: "remote", name: "teleport", arguments: { action: "jump", target: "ssh://vps/root/project" } })], { stopReason: "toolUse" }),
+      assistantMessage([text("The source stays here because remote Teleport needs Herdr.")]),
+    ],
+  }).run("Move this session to the remote project");
+  expect(getToolExecution(result, "remote").isError).toBe(true);
+  expect(getToolResultText(result, "remote")).toContain("Remote Teleport requires Herdr on both machines");
+  expect(getToolResultText(result, "remote")).not.toContain("Directory does not exist");
+  expect(result.providerRequests).toHaveLength(2);
+});
 test("a missing teleport destination is returned to the agent without ending the turn", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "teleport-missing-destination-"));
   workspaces.push(cwd);
