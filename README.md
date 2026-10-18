@@ -4,7 +4,7 @@
 
 <h1 align="center">Pi Agent Teleport</h1>
 
-<p align="center">Move a running Pi Coding Agent session between directories, repositories, and isolated Git worktrees.</p>
+<p align="center">Move a running Pi Coding Agent session between directories, Git worktrees, and remote machines.</p>
 
 <p align="center"><em>Give your agent a teleportation gun.</em></p>
 
@@ -16,7 +16,7 @@
 </p>
 
 Pi normally lives in the directory where you started it. Teleport lets the agent move
-the running session to another directory, another repository, or a fresh Git worktree —
+the running session to another directory, another repository, a fresh Git worktree, or a remote machine —
 and jump back when the job is done. The conversation continues and the session stays the same.
 
 ```text
@@ -54,7 +54,7 @@ Teleport exposes a single `teleport` tool. There are no user-facing slash comman
 
 | Action    | Purpose |
 |-----------|---------|
-| `jump`    | Move the session to an existing directory. |
+| `jump`    | Move the session to an existing local or remote directory. |
 | `back`    | Move the session to the previous location. |
 | `history` | List completed moves. |
 | `create`  | Create a linked Git worktree owned by Teleport. |
@@ -94,6 +94,45 @@ Linked-worktree and plain-directory workspaces close when their last pane leaves
 Teleport does not leave a replacement shell there. If confirmation fails, it closes
 only the destination it prepared and keeps the source.
 
+## Remote machines
+
+Ask the agent to move to a trusted SSH target and return:
+
+```text
+Move this session to ssh://buildbox/home/me/project, confirm where you are, then come back.
+```
+
+The agent uses `jump` with that address and `back` for the recorded return journey.
+The conversation and persisted session ID follow it. This starts Pi on the destination;
+it is not a local agent running commands over SSH.
+
+Before moving:
+
+- Install the same Teleport build on both machines. A missing or different build blocks
+  the move so the destination cannot strand the agent without its return tool.
+- Run Herdr on both machines. Add the destination as one enabled saved Herdr machine
+  using the same SSH alias as the Teleport address.
+- Establish key-based SSH access and host-key trust. Put ports, usernames and connection
+  options in OpenSSH config rather than the address.
+- Configure the destination's own Pi model and authentication. Teleport does not copy
+  credentials, settings, other extensions, or repository files.
+
+Pi versions may differ. Teleport reports the difference and attempts the move without
+upgrading or downgrading either installation. It checks the destination's loaded
+Teleport, session identity, directory, authentication and owned Herdr pane before
+releasing its continuation and retiring the source.
+
+A detached controller keeps a private Unix-socket return channel open over SSH from
+the original computer. The VPS does not need an SSH key for that computer. No public
+port or raw Herdr control socket is exposed. Keep the original computer awake until
+the agent returns. Brief disconnections get up to three local-origin reconnection
+attempts; the remote session is retained if recovery fails.
+
+An unconfirmed handoff stops automatic continuation on its source and records an
+inspection receipt. Inspect the recorded destination and receipt before retrying;
+do not assume that a timeout means nothing happened. History and worktree ownership
+keep machine identity, even when both hosts have the same filesystem paths.
+
 ## Managed worktrees
 
 Outside Herdr, `create` records ownership before running Git. Inside Herdr, it uses
@@ -126,12 +165,15 @@ On session start Teleport reconciles that state:
 
 - a `prepared` transition keeps the source, even when the destination file already exists;
 - a confirmed destination becomes the active session;
-- transitions are cleared, and a missing active session or resource is dropped.
+- local transitions are cleared, and missing local sessions or local resources are dropped;
+- resources belonging to another machine are kept until they can be checked on their owner.
 
 ## Requirements
 
 - Pi 0.80 or newer.
-- Node.js 22 or newer.
+- Node.js 22.19 or newer.
+- Remote moves require OpenSSH Unix-socket forwarding and native Herdr on both machines.
+  Local moves still work without Herdr.
 - Herdr integration needs `HERDR_ENV=1`, `HERDR_PANE_ID`, `HERDR_TAB_ID`, and
   `HERDR_WORKSPACE_ID`, plus the public `herdr` CLI with worktree commands. Teleport
   verifies the live caller IDs before changing Herdr state. Missing environment values
