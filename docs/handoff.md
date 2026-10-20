@@ -23,6 +23,22 @@ Pi exposes in-process session replacement only to command contexts. Teleport dis
 a private one-shot command after `agent_settled`, not while a prompt is running.
 That command is transport plumbing, not a supported user API.
 
+## Delayed move output
+
+A queued receipt means only that the move is scheduled. After the move, Teleport
+adds a saved outcome beside the initiating call in fullscreen Activity. Nested calls
+link to their outer visible call. The full continuation still reaches the agent once,
+without a second visible message in Conversation. Native history remains chronological.
+
+The execution link travels with local continuations and remote arrival and return
+receipts. It must match the same saved session and active branch; Teleport does not
+guess an owner from a path or the last call. Saved outcome entries remain visible
+after reload or resume.
+
+Known failures report failure and let the agent continue at the source. An unconfirmed
+remote outcome records a warning without starting another model turn. Keep that source
+idle and inspect the handoff before retrying, as described below.
+
 ## Local handoff
 
 Without Herdr, Teleport records a prepared transition, builds a destination session
