@@ -42,6 +42,7 @@
     "src/herdr.ts",
     "src/remote.ts",
     "src/bridge.ts",
+    "src/output.ts",
     "assets/agent-portal.webp",
     "assets/agent-portal-gallery.webp",
     "docs/handoff.md",
