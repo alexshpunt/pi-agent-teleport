@@ -43,6 +43,7 @@ function arrival(configure?: (input: Parameters<typeof stageArrival>[0], stateDi
   writeState(stateDir, previous);
   const input: Parameters<typeof stageArrival>[0] = {
     operationId: randomUUID(), sessionId,
+    execution: { sessionId, toolCallId: "move", parentToolCallId: "move" },
     sessionText: JSON.stringify({ type: "session", version: 3, id: sessionId, cwd: "/source" }) + "\n",
     path: cwd, state: previous, connection: { session: "test", workspaceId: "", paneId: "", tabId: "" },
     callback: { socket: "/private/controller.sock", token: "private-token" }, fingerprint: runtimeFingerprint(), from: "/source", to: cwd,
@@ -101,6 +102,19 @@ test("a changed retained source cannot be replaced during return recovery", () =
     input.dormantSource = { operationId, sessionFile: source, cwd: "/source", snapshot: input.sessionText };
   })).toThrow("already has a resumable copy");
   expect(runHerdr).not.toHaveBeenCalled();
+});
+test("arrival receipts preserve the exact leaf and visible root without publishing early", () => {
+  const { prepared, stateDir, previous } = arrival((input, stateDir) => {
+    input.execution = { sessionId: input.sessionId, toolCallId: "outer/1/2", parentToolCallId: "outer" };
+    input.state.returnRoute = { socket: "/private/return.sock", token: "return-token", operationId: "outward", previous: "/source" };
+    writeState(stateDir, input.state);
+  });
+  const handoff = JSON.parse(fs.readFileSync(join(prepared.dir, "handoff.json"), "utf8"));
+  expect(handoff.execution).toEqual({ sessionId: prepared.sessionId, toolCallId: "outer/1/2", parentToolCallId: "outer" });
+  expect(handoff).toMatchObject({ operationId: prepared.operationId, sessionId: prepared.sessionId, socket: "/private/controller.sock", token: "private-token" });
+  expect(readState(stateDir)).toEqual(previous);
+  commitArrival(prepared);
+  expect(readState(stateDir).returnRoute).toEqual(previous.returnRoute);
 });
 test("a committed arrival cannot be rolled back", () => {
   const { prepared, stateDir } = arrival();

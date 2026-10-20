@@ -162,6 +162,7 @@ describe("worktree removal output", () => {
     teleport({
       registerTool: (definition: ToolDefinition) => { renderCall = definition.renderCall; },
       registerCommand: () => {},
+      registerEntryRenderer: () => {},
       on: () => {},
     } as unknown as ExtensionAPI);
     const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as Parameters<NonNullable<ToolDefinition["renderCall"]>>[1];
