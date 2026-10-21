@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.7 - 2026-10-21
+
+- Keep delayed move outcomes beside their originating Teleport calls, including calls nested inside another tool, without duplicate output in Conversation.
+- Carry execution ownership through local moves and remote arrival/return handoffs while preserving the full continuation delivered to the agent.
+- Reject outcomes from a different session or abandoned branch rather than guessing which call owns them.
+- Show unconfirmed remote outcomes as warnings without waking a competing agent, preserving existing recovery safeguards.
+- Require Pi 1.3 or newer.
+- Add regression coverage for delayed ownership and delivery; run the session-replacement round trip in its own Pi process while leaving other integration tests on the shared runner.
+
 ## 0.2.6 - 2026-10-18
 
 - Move the same Pi session to a remote Herdr machine over SSH and return with its conversation intact.

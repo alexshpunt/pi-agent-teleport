@@ -1,6 +1,6 @@
 {
   "name": "pi-agent-teleport",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Move a running Pi Coding Agent session between directories, Git worktrees, and remote machines",
   "keywords": [
     "pi-package",
