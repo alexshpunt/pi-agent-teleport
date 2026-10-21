@@ -53,6 +53,9 @@ test("local jump and nested back carry both outcomes into the same destination s
   const target = await mkdtemp(join(tmpdir(), "teleport-destination-"));
   roots.push(cwd, target);
   const capture = join(testArtifactsDir(import.meta.filename), "teleport-delayed-roundtrip", "native-final-session.jsonl");
+  // Session replacement must run in its own Pi process, not the shared runner's workspace.
+  const sharedRunner = process.env.PI_INTEGRATION_TEST_RUNNER;
+  delete process.env.PI_INTEGRATION_TEST_RUNNER;
   const result = await new PiIntegrationTest({
     testName: "teleport-delayed-roundtrip",
     artifactsDir: testArtifactsDir(import.meta.filename),
@@ -67,7 +70,9 @@ test("local jump and nested back carry both outcomes into the same destination s
       assistantMessage([toolCall({ id: "return-root", name: "teleport_outer", arguments: {} })], { stopReason: "toolUse" }),
       assistantMessage([text("Returned to the original directory.")]),
     ],
-  }).run("Move to the destination and return");
+  }).run("Move to the destination and return").finally(() => {
+    if (sharedRunner !== undefined) process.env.PI_INTEGRATION_TEST_RUNNER = sharedRunner;
+  });
   const entries = (await readFile(capture, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
   const outcomes = entries.filter((entry) => entry.type === "custom" && entry.customType === "pi-agent-teleport-outcome");
   expect(entries[0].cwd).toBe(cwd);
