@@ -6,6 +6,7 @@ import { SessionManager, VERSION, type ExtensionAPI, type ExtensionCommandContex
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
+import { ownsExecution, registerTeleportOutput, type TeleportExecution, type TeleportOutcome } from "./output.ts";
 
 
 import { createManagedWorktree, prepareHerdrDestination, preserveHerdrSourceWorkspace, readState, reconcileState, removeManagedWorktree, writeState, type Resource } from "./core.ts";
@@ -60,6 +61,17 @@ async function scheduleSourceCleanup(pi: ExtensionAPI, context: HerdrContext, cw
 
 export default function teleport(pi: ExtensionAPI) {
   const implementation = runtimeFingerprint();
+  const publishOutcome = registerTeleportOutput(pi);
+  const executions = new Map<string, TeleportExecution>();
+  pi.on("tool_execution_start", (event, ctx) => {
+    const parent = event.parentToolCallId ? executions.get(event.parentToolCallId) : undefined;
+    const currentSession = ctx.sessionManager.getSessionId();
+    executions.set(event.toolCallId, {
+      sessionId: currentSession, toolCallId: event.toolCallId,
+      parentToolCallId: event.parentToolCallId ? (parent?.sessionId === currentSession ? parent.parentToolCallId : undefined) : event.toolCallId,
+    });
+  });
+  pi.on("tool_execution_end", (event) => { executions.delete(event.toolCallId); });
   if (process.env.PI_TELEPORT_PROBE) {
     process.stdout.write(`PI_TELEPORT_PROBE:${process.env.PI_TELEPORT_PROBE}:${JSON.stringify({ fingerprint: implementation, worker: workerFile, agentDir: agentDirectory(), version: VERSION })}\n`);
   }
@@ -80,7 +92,7 @@ export default function teleport(pi: ExtensionAPI) {
     ctx.shutdown();
   }
 
-  async function jumpRemote(ctx: ExtensionCommandContext, host: string, path: string) {
+  async function jumpRemote(ctx: ExtensionCommandContext, host: string, path: string, execution: TeleportExecution) {
     const herdr = getHerdrContext();
     if (!herdr) throw new Error("Remote Teleport requires Herdr on both machines. Local moves still work without Herdr.");
     assertHerdrContext(herdr);
@@ -89,7 +101,7 @@ export default function teleport(pi: ExtensionAPI) {
     const remote = probeRemote(host, path, implementation);
     const id = randomUUID();
     const state = readState(dir);
-    const move = { id, host, path, ...profile, sourceCwd: ctx.cwd, sourceSession: source, sourcePid: process.pid, sessionText, sessionId, sessionName: ctx.sessionManager.getSessionName(), state, stateDir: dir, herdr, fingerprint: implementation, remoteWorker: remote.worker, remoteAgentDir: remote.agentDir, localVersion: VERSION, remoteVersion: remote.version };
+    const move = { id, host, path, ...profile, sourceCwd: ctx.cwd, sourceSession: source, sourcePid: process.pid, sessionText, sessionId, execution, sessionName: ctx.sessionManager.getSessionName(), state, stateDir: dir, herdr, fingerprint: implementation, remoteWorker: remote.worker, remoteAgentDir: remote.agentDir, localVersion: VERSION, remoteVersion: remote.version };
     state.pendingRemote = { id, receipt: join(dir, "bridges", id, "result.json") };
     writeState(dir, state);
     // Keep the captured source state independent from the in-flight marker.
@@ -108,7 +120,7 @@ export default function teleport(pi: ExtensionAPI) {
     await retireSource(ctx, source, herdr);
   }
 
-  async function returnRemote(ctx: ExtensionCommandContext) {
+  async function returnRemote(ctx: ExtensionCommandContext, execution: TeleportExecution) {
     const state = readState(dir);
     if (!state.returnRoute) throw new Error("No remote return route is recorded.");
     const herdr = getHerdrContext();
@@ -123,7 +135,7 @@ export default function teleport(pi: ExtensionAPI) {
     writeState(dir, state);
     let result: unknown;
     try {
-      result = await requestController(state.returnRoute, { action: "return", operationId: state.returnRoute.operationId, sessionText, state, cwd: ctx.cwd, sessionName: ctx.sessionManager.getSessionName() }, HANDOFF_TIMEOUT * 3);
+      result = await requestController(state.returnRoute, { action: "return", operationId: state.returnRoute.operationId, sessionText, execution, state, cwd: ctx.cwd, sessionName: ctx.sessionManager.getSessionName() }, HANDOFF_TIMEOUT * 3);
     } catch (error) {
       const uncertain = error instanceof UnknownRemoteOutcome;
       try { writeFileSync(receipt, JSON.stringify({ ok: false, uncertain, error: String(error) }), { mode: 0o600 }); } catch { /* The persisted pending marker still fences this source. */ }
@@ -138,11 +150,11 @@ export default function teleport(pi: ExtensionAPI) {
     catch { notify(ctx, "Return committed. Its local receipt could not be saved; continue only at the returned destination.", "error"); }
     await retireSource(ctx, source, herdr);
   }
-  async function jump(ctx: ExtensionCommandContext, rawTarget: string) {
+  async function jump(ctx: ExtensionCommandContext, rawTarget: string, execution: TeleportExecution) {
     const sourceCwd = ctx.cwd;
     const currentState = readState(dir);
     const parsed = parseTarget(rawTarget, ctx.cwd, currentState.machine);
-    if (parsed.host) { await jumpRemote(ctx, parsed.host, parsed.path); return; }
+    if (parsed.host) { await jumpRemote(ctx, parsed.host, parsed.path, execution); return; }
     const target = realpathSync(parsed.path);
     const { source, destination } = serialize(ctx, target);
     let state = readState(dir);
@@ -156,7 +168,7 @@ export default function teleport(pi: ExtensionAPI) {
         const resource = Object.values(state.resources).find((resource) => resource.machine === state.machine && resource.path === target);
         prepared = prepareHerdrDestination(context, target, resource?.herdr, ctx.sessionManager.getSessionName());
         const location = prepared.location;
-        const continuation = Buffer.from(`Agent teleported: ${sourceCwd} → ${target}. Continue the original task from the destination. Do not repeat the teleport request.`, "utf8").toString("base64url");
+        const continuation = Buffer.from(JSON.stringify({ execution, from: qualifyLocation(sourceCwd, state.machine), to: qualifyLocation(target, state.machine) }), "utf8").toString("base64url");
         runHerdr(context, ["pane", "run", location.paneId, `PI_TELEPORT_CONTINUATION=${quote(continuation)} pi --approve --session ${quote(destination)}`]);
         await waitForDestination(context, location.paneId, destination);
         state = readState(dir);
@@ -195,12 +207,13 @@ export default function teleport(pi: ExtensionAPI) {
         customType: "pi-agent-teleport-continuation",
         content: `Agent teleported: ${sourceCwd} → ${target}. Continue the original task from the destination. Do not repeat the teleport request.`,
         display: false,
+        details: { outcome: { ...execution, status: "completed", text: `Agent teleported: ${sourceCwd} → ${target}` } satisfies TeleportOutcome },
       }, { triggerTurn: true, deliverAs: "followUp" });
     }});
     if (result.cancelled || !started) { rmSync(destination, { force: true }); state = readState(dir); delete state.transition; writeState(dir, state); throw new Error("Teleport was cancelled."); }
   }
 
-  type PendingOperation = { action: "jump" | "back"; target?: string };
+  type PendingOperation = { action: "jump" | "back"; target?: string; execution: TeleportExecution };
   const pending = new Map<string, PendingOperation>();
   let queuedToken: string | undefined;
 
@@ -219,26 +232,30 @@ export default function teleport(pi: ExtensionAPI) {
     async handler(token, ctx) {
       const operation = pending.get(token);
       pending.delete(token);
-      if (!operation) return;
+      if (!operation || !ownsExecution(ctx, operation.execution)) return;
       try {
         if (operation.action === "jump") {
           if (!operation.target) throw new Error("A target directory is required.");
-          await jump(ctx, operation.target);
+          await jump(ctx, operation.target, operation.execution);
         } else {
           const state = readState(dir);
           const previous = state.history.at(-1)?.from;
           if (!previous) throw new Error("Teleport history is empty.");
-          if (state.returnRoute?.previous === previous) await returnRemote(ctx);
-          else await jump(ctx, previous);
+          if (state.returnRoute?.previous === previous) await returnRemote(ctx, operation.execution);
+          else await jump(ctx, previous, operation.execution);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         notify(ctx, message, "error");
-        if (error instanceof UnknownRemoteOutcome) return;
+        if (error instanceof UnknownRemoteOutcome) {
+          publishOutcome(ctx, { ...operation.execution, status: "uncertain", text: `Teleport outcome unconfirmed: ${message}` });
+          return;
+        }
         pi.sendMessage({
           customType: "pi-agent-teleport-failure",
           content: `Teleport failed: ${message} Continue the original task from the current location.`,
           display: false,
+          details: { outcome: { ...operation.execution, status: "failed", text: `Teleport failed: ${message}` } satisfies TeleportOutcome },
         }, { triggerTurn: true, deliverAs: "followUp" });
       }
     },
@@ -262,7 +279,7 @@ export default function teleport(pi: ExtensionAPI) {
       path: Type.Optional(Type.String()),
       resourceId: Type.Optional(Type.String()),
     }, { additionalProperties: false }),
-    async execute(_id, params, _signal, _onUpdate, ctx) {
+    async execute(id, params, _signal, _onUpdate, ctx) {
       if (params.action === "history") {
         const state = readState(dir);
         const history = state.history;
@@ -298,11 +315,13 @@ export default function teleport(pi: ExtensionAPI) {
       const target = destination ? qualifyLocation(destination.path, destination.host ?? state.machine) : "previous location";
       if (pending.size) throw new Error("A Teleport move is already queued. Wait for it to finish.");
       const token = randomUUID();
-      pending.set(token, { action: params.action, target: params.target });
+      const execution = executions.get(id);
+      if (!execution || !ownsExecution(ctx, execution)) throw new Error("Teleport requires its originating execution on the active session branch.");
+      pending.set(token, { action: params.action, target: params.target, execution });
       queuedToken = token;
       return {
         content: [{ type: "text" as const, text: `✦ Agent teleport queued: ${current} → ${target}` }],
-        details: { action: params.action, target: params.target },
+        details: { action: params.action, target: params.target, execution },
         terminate: true,
       };
     },
@@ -358,13 +377,17 @@ export default function teleport(pi: ExtensionAPI) {
     },
   });
   pi.on("session_start", async (_event, ctx) => {
+    executions.clear();
     sessionId = ctx.sessionManager.getSessionId();
     dir = dataDir(sessionId);
     const handoffFile = process.env.PI_TELEPORT_HANDOFF;
+    let arrivalExecution: TeleportExecution | undefined;
     if (handoffFile) {
       delete process.env.PI_TELEPORT_HANDOFF;
       try {
         const handoff = JSON.parse(readFileSync(handoffFile, "utf8"));
+        arrivalExecution = handoff.execution;
+        if (!arrivalExecution || !ownsExecution(ctx, arrivalExecution)) throw new Error("Teleport arrival does not own an execution on this session branch.");
         const herdr = getHerdrContext();
         if (!herdr || !ctx.model) throw new Error("Destination needs a ready Pi model and its own native Herdr pane.");
         const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
@@ -405,14 +428,18 @@ export default function teleport(pi: ExtensionAPI) {
         customType: "pi-agent-teleport-continuation",
         content: `Agent teleported: ${route?.from} → ${route?.to}. This Pi process is now running at ${qualifyLocation(ctx.cwd, state.machine)}. Continue the original task from here. Do not repeat the teleport request. Use teleport back for the recorded return journey.`,
         display: false,
+        details: { outcome: arrivalExecution ? { ...arrivalExecution, status: "completed", text: `Agent teleported: ${route?.from} → ${route?.to}` } satisfies TeleportOutcome : undefined },
       }, { triggerTurn: true, deliverAs: "followUp" });
     }
     if (encodedContinuation) {
       delete process.env.PI_TELEPORT_CONTINUATION;
+      const continuation = JSON.parse(Buffer.from(encodedContinuation, "base64url").toString("utf8")) as { execution: TeleportExecution; from: string; to: string };
+      if (!ownsExecution(ctx, continuation.execution)) return;
       pi.sendMessage({
         customType: "pi-agent-teleport-continuation",
-        content: Buffer.from(encodedContinuation, "base64url").toString("utf8"),
+        content: `Agent teleported: ${continuation.from} → ${continuation.to}. Continue the original task from the destination. Do not repeat the teleport request.`,
         display: false,
+        details: { outcome: { ...continuation.execution, status: "completed", text: `Agent teleported: ${continuation.from} → ${continuation.to}` } satisfies TeleportOutcome },
       }, { triggerTurn: true, deliverAs: "followUp" });
     }
   });

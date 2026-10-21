@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TeleportState } from "./core.ts";
 import type { HerdrContext } from "./herdr.ts";
+import type { TeleportExecution } from "./output.ts";
 
 const sourceDir = dirname(fileURLToPath(import.meta.url));
 export const extensionFile = join(sourceDir, "index.ts");
@@ -24,7 +25,7 @@ export type ReadyIdentity = { operationId: string; fingerprint: string; sessionI
 /** Plain data captured before retiring the source extension runtime. */
 export type RemoteMove = {
   id: string; host: string; path: string; machine: string; remoteSession: string;
-  sessionId: string; sessionText: string; sessionName?: string; state: TeleportState;
+  sessionId: string; sessionText: string; sessionName?: string; state: TeleportState; execution: TeleportExecution;
   sourceCwd: string; sourceSession: string; sourcePid: number; stateDir: string; herdr: HerdrContext;
   fingerprint: string; remoteWorker: string; remoteAgentDir: string; localVersion: string; remoteVersion: string;
 };
@@ -48,7 +49,7 @@ export function agentDirectory(): string { return process.env.PI_CODING_AGENT_DI
 /** Fingerprint executable Teleport files, not Pi or unrelated extensions. */
 export function runtimeFingerprint(): string {
   const hash = createHash("sha256");
-  for (const name of ["index.ts", "core.ts", "herdr.ts", "remote.ts", "bridge.ts"]) hash.update(name).update(readFileSync(join(sourceDir, name)));
+  for (const name of ["index.ts", "core.ts", "herdr.ts", "remote.ts", "bridge.ts", "output.ts"]) hash.update(name).update(readFileSync(join(sourceDir, name)));
   return hash.digest("hex");
 }
 

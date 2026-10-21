@@ -25,7 +25,7 @@ the job is done. The conversation continues in the same session.
 pi install npm:pi-agent-teleport
 ```
 
-Requires Pi 0.80 or newer, Node.js 22.19 or newer, and a saved Pi session.
+Requires Pi 1.3 or newer, Node.js 22.19 or newer, and a saved Pi session.
 
 ## Use it
 
