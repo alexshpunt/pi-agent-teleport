@@ -234,6 +234,28 @@ export default function teleport(pi: ExtensionAPI) {
   const pending = new Map<string, PendingOperation>();
   let queuedToken: string | undefined;
 
+  // Pi only honors terminate when every sibling tool agrees. Wait for the full
+  // batch to finish, then abort the source response loop before the handoff.
+  pi.on("turn_end", (event, ctx) => {
+    if (!queuedToken) return;
+    // TUI abort restores queued user messages to the source editor. Save them
+    // in the transcript first so closing that pane cannot lose instructions.
+    const entries = [...event.entries];
+    for (const message of event.context.pendingMessages) {
+      if (message.role === "user") entries.push({
+        type: "custom_message", customType: "Queued user message",
+        content: message.content, display: true,
+      });
+      else if (message.role === "custom") entries.push({
+        type: "custom_message", customType: message.customType,
+        content: message.content, display: message.display, details: message.details,
+      });
+    }
+    const draft = ctx.ui.getEditorText();
+    ctx.abort();
+    ctx.ui.setEditorText(draft);
+    return { entries };
+  });
   // Slash commands execute immediately in Pi, even with followUp delivery.
   // Wait until the tool turn has fully settled before replacing its session.
   pi.on("agent_settled", (_event, ctx) => {
