@@ -192,6 +192,22 @@ test("native readiness still checks the exact PID and cwd when Pi replaces its a
   expect(hasSessionProcess(processes, 42, "/other", "/session.jsonl")).toBe(false);
   expect(hasSessionProcess([{ ...processes[0], argv: ["pi", "--session", "/wrong.jsonl"] }], 42, "/destination", "/session.jsonl")).toBe(false);
 });
+test.each([
+  ["C:\\work\\destination", "C:\\work\\destination\\"],
+  ["C:\\", "C:/"],
+  ["\\\\server\\share\\destination", "\\\\server\\share\\destination\\"],
+])("Windows readiness accepts the same cwd spelling: %s and %s", (cwd, observed) => {
+  const session = "C:\\sessions\\destination.jsonl";
+  const processes = [{ pid: 42, cwd: observed, argv: ["node", "pi.js", "--session", session] }];
+  expect(hasSessionProcess(processes, 42, cwd, session, "win32")).toBe(true);
+  expect(hasSessionProcess(processes, 43, cwd, session, "win32")).toBe(false);
+  expect(hasSessionProcess(processes, 42, `${cwd}other`, session, "win32")).toBe(false);
+  expect(hasSessionProcess(processes, 42, cwd, "C:\\wrong.jsonl", "win32")).toBe(false);
+  expect(hasSessionProcess([{ pid: 42 }], 42, cwd, session, "win32")).toBe(false);
+});
+test("Unix readiness keeps exact cwd comparison", () => {
+  expect(hasSessionProcess([{ pid: 42, cwd: "/destination/" }], 42, "/destination", "/session.jsonl", "linux")).toBe(false);
+});
 describe("destination readiness", () => {
   const expected = { operationId: "operation", fingerprint: "current-code", sessionId: "session", cwd: "/destination", sessionFile: "/sessions/destination.jsonl", paneId: "w1:p1", agentDir: "/agent" };
   const ready = { ...expected, pid: 42 };
