@@ -14,6 +14,12 @@ export const extensionFile = join(sourceDir, "index.ts");
 export const workerFile = join(sourceDir, "bridge.ts");
 export const MAX_PACKET = 64 * 1024 * 1024;
 
+/** Run the current Pi installation directly, without an npm shell wrapper. */
+export function piCommand(): string[] {
+  const script = process.argv[1];
+  return script && existsSync(script) ? [process.execPath, ...process.execArgv, resolve(script)] : [process.execPath];
+}
+
 /** An unconfirmed commit must leave the source idle, not launch a competing continuation. */
 export class UnknownRemoteOutcome extends Error {}
 

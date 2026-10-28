@@ -3,9 +3,31 @@ import { realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { shellQuote } from "./remote.ts";
 
+/** Encode a script so the receiving Windows shell never parses paths or handoff JSON. */
+export function powershellCommand(script: string): string {
+  return `powershell.exe -NoLogo -NoProfile -EncodedCommand ${Buffer.from(script, "utf16le").toString("base64")}`;
+}
+
+export function powershellQuote(value: string): string { return `'${value.replaceAll("'", "''")}'`; }
+
 /** Publish a launch exit even when Pi dies before the first process observation. */
-export function guardedLaunch(command: string, receipt: string): string {
+export function guardedLaunch(argv: string[], receipt: string, env: Record<string, string> = {}, platform: NodeJS.Platform = process.platform): string {
   const temporary = `${receipt}.exit.tmp`;
+  if (platform === "win32") {
+    const quote = powershellQuote;
+    return powershellCommand([
+      "$ErrorActionPreference = 'Stop'",
+      ...Object.entries(env).map(([name, value]) => `[Environment]::SetEnvironmentVariable(${quote(name)}, ${quote(value)}, 'Process')`),
+      "$status = 1",
+      `try { $global:LASTEXITCODE = 0; & ${argv.map(quote).join(" ")}; $status = $LASTEXITCODE } catch { [Console]::Error.WriteLine($_.ToString()) }`,
+      `if ([IO.Directory]::Exists([IO.Path]::GetDirectoryName(${quote(receipt)}))) {`,
+      `  $json = @{ok = $false; error = "Destination Pi exited (status $status)."} | ConvertTo-Json -Compress`,
+      `  [IO.File]::WriteAllText(${quote(temporary)}, $json, (New-Object Text.UTF8Encoding $false))`,
+      `  Move-Item -LiteralPath ${quote(temporary)} -Destination ${quote(receipt)} -Force`,
+      "}",
+    ].join("\n"));
+  }
+  const command = [...Object.entries(env).map(([name, value]) => `${name}=${shellQuote(value)}`), ...argv.map(shellQuote)].join(" ");
   const script = `${command}; status=$?; if [ -d ${shellQuote(dirname(receipt))} ]; then printf '{"ok":false,"error":"Destination Pi exited (status %s)."}\\n' "$status" > ${shellQuote(temporary)} && mv ${shellQuote(temporary)} ${shellQuote(receipt)}; fi`;
   return `sh -c ${shellQuote(script)}`;
 }
