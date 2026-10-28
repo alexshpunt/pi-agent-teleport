@@ -1,6 +1,6 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type Socket } from "node:net";
+import { createServer, Socket } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { confirmArrival, hasSessionProcess, parseTarget, qualifyLocation, relocateSession, requestController, UnknownRemoteOutcome, validateReady, waitForReceipt } from "./remote.ts";
 
@@ -34,6 +34,19 @@ test("a known callback refusal differs from an unknown disconnected outcome", as
   });
 });
 
+test("a controller connection has no startup deadline", async () => {
+  const deadline = vi.spyOn(Socket.prototype, "setTimeout");
+  try {
+    await withSocket((socket) => socket.once("data", () => {
+      socket.end(`${JSON.stringify({ ok: true, destination: "/delayed-destination" })}\n`);
+    }), async (socket) => {
+      expect(await requestController({ socket, token: "route" }, { action: "return" }))
+        .toEqual({ ok: true, destination: "/delayed-destination" });
+    });
+    expect(deadline).not.toHaveBeenCalled();
+  } finally { deadline.mockRestore(); }
+});
+
 test("a lost readiness response cannot shut down an already committed arrival", async () => {
   let commitFile = "";
   await withSocket((socket) => socket.once("data", () => {
@@ -45,13 +58,72 @@ test("a lost readiness response cannot shut down an already committed arrival", 
   });
 });
 
-test("an explicit readiness refusal is not overridden by a commit marker", async () => {
-  await withSocket((socket) => socket.once("data", () => socket.end(`${JSON.stringify({ ok: false, error: "Wrong session" })}\n`)), async (socket) => {
+test("a late readiness refusal cannot undo a durable commit", async () => {
+  let requests = 0;
+  await withSocket((socket) => socket.once("data", () => {
+    requests++;
+    socket.end(`${JSON.stringify({ ok: false, error: "Arrival already acknowledged" })}\n`);
+  }), async (socket) => {
     const commitFile = join(dirname(socket), "committed.json");
     writeFileSync(commitFile, JSON.stringify({ ok: true }));
-    await expect(confirmArrival({ socket, token: "route", commitFile }, { sessionId: "session" })).rejects.toThrow("Wrong session");
+    await expect(confirmArrival({ socket, token: "route", commitFile }, { sessionId: "session" })).resolves.toBeUndefined();
+    expect(requests).toBe(0);
   });
 });
+test("an uncommitted destination still rejects an explicit controller refusal", async () => {
+  await withSocket((socket) => socket.once("data", () => socket.end(`${JSON.stringify({ ok: false, error: "Wrong session" })}\n`)), async (socket) => {
+    await expect(confirmArrival({ socket, token: "route", commitFile: join(dirname(socket), "committed.json") }, { sessionId: "session" })).rejects.toBeInstanceOf(Error);
+  });
+});
+
+test("a commit published during a late callback remains authoritative", async () => {
+  let commitFile = "";
+  await withSocket((socket) => socket.once("data", () => {
+    writeFileSync(commitFile, JSON.stringify({ ok: true }));
+    socket.end(`${JSON.stringify({ ok: false, error: "Arrival already acknowledged" })}\n`);
+  }), async (socket) => {
+    commitFile = join(dirname(socket), "committed.json");
+    await expect(confirmArrival({ socket, token: "route", commitFile }, { sessionId: "session" })).resolves.toBeUndefined();
+  });
+});
+test("a slow durable commit does not shut down an acknowledged destination", async () => {
+  let received!: () => void;
+  const request = new Promise<void>((resolve) => { received = resolve; });
+  await withSocket((socket) => socket.once("data", () => {
+    socket.end(`${JSON.stringify({ ok: true })}\n`);
+    received();
+  }), async (socket) => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      const commitFile = join(dirname(socket), "committed.json");
+      let completed = false;
+      const arrival = confirmArrival({ socket, token: "route", commitFile }, { sessionId: "session" }).then(() => { completed = true; });
+      await request;
+      // Let the real socket deliver its acknowledgement before advancing the startup clock.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(completed).toBe(false);
+      writeFileSync(commitFile, JSON.stringify({ ok: true }));
+      await vi.advanceTimersByTimeAsync(100);
+      await arrival;
+      expect(completed).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+});
+
+test("a temporarily missing callback socket cannot kill a destination committed by process evidence", async () => {
+  mkdirSync(resolve(".tmp"), { recursive: true });
+  const dir = mkdtempSync(resolve(".tmp/late-controller-"));
+  try {
+    const commitFile = join(dir, "committed.json");
+    const arrival = confirmArrival({ socket: join(dir, "missing.sock"), token: "route", commitFile }, { sessionId: "session" });
+    const result = arrival.then(() => true, () => false);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    writeFileSync(commitFile, JSON.stringify({ ok: true }));
+    expect(await result).toBe(true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("a malformed callback receipt cannot authorize a competing source continuation", async () => {
   await withSocket((socket) => socket.once("data", () => socket.end("invalid JSON\n")), async (socket) => {
     await expect(requestController({ socket, token: "route" }, { action: "return" })).rejects.toBeInstanceOf(UnknownRemoteOutcome);
@@ -62,7 +134,18 @@ test("an unconfirmed durable receipt is never treated as a failed move safe to r
   const dir = mkdtempSync(resolve(".tmp/receipt-"));
   try {
     const path = join(dir, "result.json");
-    await expect(waitForReceipt(path, 1)).rejects.toBeInstanceOf(UnknownRemoteOutcome);
+    vi.useFakeTimers();
+    try {
+      let settled = false;
+      const receipt = waitForReceipt(path);
+      const result = receipt.then(() => { settled = true; }, () => { settled = true; });
+      await vi.advanceTimersByTimeAsync(240_000);
+      expect(settled).toBe(false);
+      writeFileSync(path, JSON.stringify({ ok: true, destination: "/fixture-destination" }));
+      await vi.advanceTimersByTimeAsync(100);
+      await result;
+      expect(await receipt).toEqual({ ok: true, destination: "/fixture-destination" });
+    } finally { vi.useRealTimers(); }
     writeFileSync(path, JSON.stringify({ ok: false, uncertain: true, error: "Commit unconfirmed" }));
     await expect(waitForReceipt(path)).rejects.toBeInstanceOf(UnknownRemoteOutcome);
   } finally { rmSync(dir, { recursive: true, force: true }); }
