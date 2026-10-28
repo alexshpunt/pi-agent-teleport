@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TeleportState } from "./core.ts";
 import type { HerdrContext } from "./herdr.ts";
@@ -13,6 +13,12 @@ const sourceDir = dirname(fileURLToPath(import.meta.url));
 export const extensionFile = join(sourceDir, "index.ts");
 export const workerFile = join(sourceDir, "bridge.ts");
 export const MAX_PACKET = 64 * 1024 * 1024;
+
+/** Run the current Pi installation directly, without an npm shell wrapper. */
+export function piCommand(): string[] {
+  const script = process.argv[1];
+  return script && existsSync(script) ? [process.execPath, ...process.execArgv, resolve(script)] : [process.execPath];
+}
 
 /** An unconfirmed commit must leave the source idle, not launch a competing continuation. */
 export class UnknownRemoteOutcome extends Error {}
@@ -70,9 +76,10 @@ export function validateReady(expected: ReadyIdentity, actual: ReadyIdentity & {
 }
 
 /** Match the authenticated callback to its native foreground process; Pi may replace its visible argv with its process title. */
-export function hasSessionProcess(processes: Array<{ pid: number; cwd?: string; argv?: string[] }> | undefined, pid: number, cwd: string, sessionFile: string): boolean {
+export function hasSessionProcess(processes: Array<{ pid: number; cwd?: string; argv?: string[] }> | undefined, pid: number, cwd: string, sessionFile: string, platform: NodeJS.Platform = process.platform): boolean {
+  const canonicalCwd = platform === "win32" ? win32.resolve : (value: string) => value;
   return !!processes?.some((process) => {
-    if (process.pid !== pid || process.cwd !== cwd) return false;
+    if (process.pid !== pid || process.cwd === undefined || canonicalCwd(process.cwd) !== canonicalCwd(cwd)) return false;
     const argument = process.argv?.indexOf("--session") ?? -1;
     return argument < 0 || process.argv?.[argument + 1] === sessionFile;
   });

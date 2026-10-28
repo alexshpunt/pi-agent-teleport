@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "@earendil-works/pi-coding-agent";
 import { readHerdrPane, runHerdr, shellOwnsForeground, withOutput, type HerdrContext } from "./herdr.ts";
-import { hasSessionProcess } from "./remote.ts";
+import { hasSessionProcess, piCommand } from "./remote.ts";
 
 /** A destination Pi's own verdict on whether it can continue the session. */
 export type Readiness = { ok: true; pid: number; cwd: string; sessionFile: string } | { ok: false; error: string };
@@ -76,12 +76,6 @@ export function preflightArguments(argv: string[]): string[] {
     kept.push(arg);
   }
   return kept;
-}
-
-/** Run the same Pi installation and Node flags as the current process. A compiled binary has no script on disk. */
-function piCommand(): string[] {
-  const script = process.argv[1];
-  return script && existsSync(script) ? [process.execPath, ...process.execArgv, script] : [process.execPath];
 }
 
 function tail(text: string, limit = 16_384): string { return text.length > limit ? text.slice(-limit) : text; }

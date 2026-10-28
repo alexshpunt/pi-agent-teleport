@@ -8,9 +8,9 @@ import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import { ownsExecution, registerTeleportOutput, type TeleportExecution, type TeleportOutcome } from "./output.ts";
 import { createManagedWorktree, prepareHerdrDestination, preserveHerdrSourceWorkspace, readState, reconcileState, removeManagedWorktree, writeState, type Resource } from "./core.ts";
-import { assertHerdrContext, getHerdrContext, guardedLaunch, runHerdr, type HerdrContext } from "./herdr.ts";
+import { assertHerdrContext, getHerdrContext, guardedLaunch, powershellCommand, powershellQuote, runHerdr, type HerdrContext } from "./herdr.ts";
 import { awaitHerdrArrival, preflightSession, writeReadiness } from "./readiness.ts";
-import { UnknownRemoteOutcome, agentDirectory, confirmArrival, extensionFile, parseTarget, probeRemote, qualifyLocation, remoteMachine, requestController, runtimeFingerprint, shellQuote as quote, startRemoteMove, workerFile } from "./remote.ts";
+import { UnknownRemoteOutcome, agentDirectory, piCommand, confirmArrival, extensionFile, parseTarget, probeRemote, qualifyLocation, remoteMachine, requestController, runtimeFingerprint, shellQuote as quote, startRemoteMove, workerFile } from "./remote.ts";
 
 function dataDir(sessionId: string): string { return join(process.env.PI_CODING_AGENT_DIR ?? join(process.env.HOME ?? homedir(), ".pi", "agent"), "teleport", sessionId); }
 function serialize(ctx: ExtensionCommandContext, target: string): { source: string; destination: string } {
@@ -26,7 +26,13 @@ function serialize(ctx: ExtensionCommandContext, target: string): { source: stri
   return { source, destination };
 }
 /** Build the detached command that closes only the source pane before cleaning its session file. */
-export function buildSourcePaneCleanup(paneId: string, sourcePid: number, sessionFile: string): string {
+export function buildSourcePaneCleanup(paneId: string, sourcePid: number, sessionFile: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform === "win32") return [
+    "Start-Sleep -Milliseconds 250",
+    `& herdr pane close ${powershellQuote(paneId)} *> $null`,
+    `for ($i = 0; $i -lt 50 -and (Get-Process -Id ${sourcePid} -ErrorAction SilentlyContinue); $i++) { Start-Sleep -Milliseconds 100 }`,
+    `Remove-Item -LiteralPath ${powershellQuote(sessionFile)} -Force -ErrorAction SilentlyContinue`,
+  ].join("\n");
   return [
     "sleep 0.25",
     `herdr pane close ${quote(paneId)} >/dev/null 2>&1 || true`,
@@ -44,8 +50,10 @@ export function formatRemovedWorktree(resource: Resource): string {
 async function scheduleSourceCleanup(pi: ExtensionAPI, context: HerdrContext, cwd: string, sessionFile: string): Promise<void> {
   preserveHerdrSourceWorkspace(context, cwd);
   const cleanup = buildSourcePaneCleanup(context.paneId, process.pid, sessionFile);
-  const launcher = `if command -v setsid >/dev/null 2>&1; then setsid sh -c ${quote(cleanup)} >/dev/null 2>&1 < /dev/null & else nohup sh -c ${quote(cleanup)} >/dev/null 2>&1 < /dev/null & fi`;
-  const result = await pi.exec('sh', ['-lc', launcher], { timeout: 5_000 });
+  const result = process.platform === "win32"
+    // Start-Process owns a separate hidden window, so closing the source pane cannot kill cleanup.
+    ? await pi.exec("powershell.exe", ["-NoLogo", "-NoProfile", "-Command", `$ErrorActionPreference = 'Stop'; Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList ${powershellQuote(powershellCommand(cleanup).slice("powershell.exe ".length))}`], { timeout: 5_000 })
+    : await pi.exec("sh", ["-lc", `if command -v setsid >/dev/null 2>&1; then setsid sh -c ${quote(cleanup)} >/dev/null 2>&1 < /dev/null & else nohup sh -c ${quote(cleanup)} >/dev/null 2>&1 < /dev/null & fi`], { timeout: 5_000 });
   if (result.code !== 0) throw new Error(result.stderr || result.stdout || 'Failed to schedule source cleanup.');
 }
 
@@ -183,7 +191,7 @@ export default function teleport(pi: ExtensionAPI) {
         prepared = prepareHerdrDestination(context, target, resource?.herdr, ctx.sessionManager.getSessionName());
         const location = prepared.location;
         const continuation = Buffer.from(JSON.stringify({ execution, from: qualifyLocation(sourceCwd, state.machine), to: qualifyLocation(target, state.machine), receipt }), "utf8").toString("base64url");
-        runHerdr(context, ["pane", "run", location.paneId, guardedLaunch(`PI_CODING_AGENT_DIR=${quote(agentDirectory())} PI_TELEPORT_CONTINUATION=${quote(continuation)} pi --approve --session ${quote(destination)}`, receipt)]);
+        runHerdr(context, ["pane", "run", location.paneId, guardedLaunch([...(process.platform === "win32" ? piCommand() : ["pi"]), "--approve", "--session", destination], receipt, { PI_CODING_AGENT_DIR: agentDirectory(), PI_TELEPORT_CONTINUATION: continuation })]);
         // The destination stays gated until this commit; the source retires only after its own readiness verdict.
         await awaitHerdrArrival(context, location.paneId, destination, receipt);
         state = readState(dir);
