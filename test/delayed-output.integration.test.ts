@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -86,4 +86,39 @@ test("local jump and nested back carry both outcomes into the same destination s
   expect(result.providerRequests).toHaveLength(3);
   expect(JSON.stringify(result.providerRequests[2]).match(/Continue the original task from the destination\./g)).toHaveLength(2);
   expect(entries.filter((entry) => entry.type === "message" && entry.message.role === "user")).toHaveLength(1);
+});
+
+test("a destination where Pi cannot start keeps the agent at the source with the exact startup failure", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "teleport-source-"));
+  const target = await realpath(await mkdtemp(join(tmpdir(), "teleport-broken-")));
+  roots.push(cwd, target);
+  const capture = join(testArtifactsDir(import.meta.filename), "teleport-broken-destination", "native-final-session.jsonl");
+  // The destination check starts a separate Pi from this process's command line; keep it out of the shared runner.
+  const sharedRunner = process.env.PI_INTEGRATION_TEST_RUNNER;
+  delete process.env.PI_INTEGRATION_TEST_RUNNER;
+  const result = await new PiIntegrationTest({
+    testName: "teleport-broken-destination",
+    artifactsDir: testArtifactsDir(import.meta.filename),
+    cwd,
+    environment: { ...process.env, HERDR_ENV: "", HERDR_PANE_ID: "", HERDR_TAB_ID: "", HERDR_WORKSPACE_ID: "", TELEPORT_TEST_CAPTURE: capture, TELEPORT_TEST_BROKEN_DESTINATION: target },
+    extensions: [join(dirname(import.meta.filename), "..", "src", "index.ts"), join(dirname(import.meta.filename), "fixtures", "broken-destination.ts"), join(dirname(import.meta.filename), "fixtures", "capture-session.ts")],
+    tools: ["teleport"],
+    rawMode: false,
+    isolateUserResources: true,
+    conversation: [
+      assistantMessage([toolCall({ id: "outward", name: "teleport", arguments: { action: "jump", target } })], { stopReason: "toolUse" }),
+      assistantMessage([text("Staying at the source.")]),
+    ],
+  }).run("Move to the broken destination").finally(() => {
+    if (sharedRunner !== undefined) process.env.PI_INTEGRATION_TEST_RUNNER = sharedRunner;
+  });
+  const entries = (await readFile(capture, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  // The same process kept running at the source and started the next turn there.
+  expect(entries[0].cwd).toBe(cwd);
+  expect(result.providerRequests).toHaveLength(2);
+  const failures = entries.filter((entry) => entry.type === "custom_message" && entry.customType === "pi-agent-teleport-failure");
+  expect(failures).toHaveLength(1);
+  expect(result.exitCode).toBe(0);
+  expect(failures[0].content).toContain("destination boom: database lock held by another process");
+  expect(JSON.stringify(result.providerRequests[1])).toContain("destination boom: database lock held by another process");
 });
