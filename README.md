@@ -71,7 +71,8 @@ Keep the original computer awake and connected until the agent returns. Brief
 disconnections can recover, but a prolonged connection loss may need manual recovery.
 
 If a move is reported as unconfirmed, ask the agent to inspect it before retrying.
-A timeout does not necessarily mean the move failed.
+A slow agent startup has no time limit. Teleport cancels startup only on a reported
+failure or an observed exit, not because time has passed.
 
 ## Worktrees and safety
 
