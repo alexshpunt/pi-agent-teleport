@@ -103,6 +103,11 @@ Local startup reconciliation retains the source of a prepared transition, clears
 finished local transitions, and drops missing local sessions or resources. Foreign
 resources remain recorded until checked on their owning machine.
 
+Startup readiness, controller responses and commit receipts have no waiting deadline.
+The source remains available until the destination reports usable startup. A launch-exit
+receipt catches failures even before the first process observation. Slow startup hooks
+and temporary observation failures do not trigger rollback.
+
 Known pre-commit failures roll back only the attempted destination and restore the
 previous state. Unknown stage, commit, cleanup or return outcomes keep a persistent
 source fence: do not resume a second competing agent or blindly retry.
@@ -111,7 +116,7 @@ For an unconfirmed handoff:
 
 1. Keep the source idle and preserve its files.
 2. Inspect the operation's saved receipt and the exact recorded destination session
-   and native Herdr pane. A timeout alone proves neither failure nor success.
+   and native Herdr pane. Elapsed time alone proves neither failure nor success.
 3. Establish which destination committed before deciding where to continue.
 4. Clean up only resources recorded as owned by that operation.
 
