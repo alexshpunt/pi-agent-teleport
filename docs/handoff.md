@@ -19,9 +19,17 @@ Create results and history include the resource ID needed for removal. Machine
 identity qualifies remote locations and resource ownership, so identical filesystem
 paths on different hosts are not treated as the same location.
 
-Pi exposes in-process session replacement only to command contexts. Teleport dispatches
-a private one-shot command after `agent_settled`, not while a prompt is running.
-That command is transport plumbing, not a supported user API.
+Pi exposes in-process session replacement only to command contexts. When a move is
+queued, Teleport lets every sibling tool finish in the source folder, then aborts
+the response loop at `turn_end`. This also handles moves issued alongside Codemode:
+Pi only honors a tool's `terminate` result when every sibling agrees to terminate.
+If messages are already queued, Teleport leaves Pi's delivery policy unchanged:
+Pi processes the queue at the source before the move. It does not abort that turn,
+because TUI abort clears the full queue while the public preview exposes only the
+next message.
+
+Teleport dispatches a private one-shot command after `agent_settled`, not while a
+prompt is running. That command is transport plumbing, not a supported user API.
 
 ## Delayed move output
 
