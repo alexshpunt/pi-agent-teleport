@@ -137,7 +137,7 @@ describe("Herdr arrival readiness", () => {
   test("a command exiting before observation reports failure instead of waiting forever", async () => {
     vi.mocked(runHerdr).mockReturnValue(shell);
     vi.mocked(readHerdrPane).mockReturnValue("fixture-fast-exit");
-    execFileSync("sh", ["-c", guardedLaunch("sh -c 'exit 7'", receipt)]);
+    execFileSync("sh", ["-c", guardedLaunch(["sh", "-c", "exit 7"], receipt)]);
     expect(JSON.parse(readFileSync(receipt, "utf8")).ok).toBe(false);
     await expect(awaitHerdrArrival(context, "w2:p1", "/s.jsonl", receipt)).rejects.toThrow("fixture-fast-exit");
   });
