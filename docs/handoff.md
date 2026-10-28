@@ -72,6 +72,12 @@ The destination waits for handoff commit before continuing. Teleport confirms th
 native process and saves explicit workspace, tab and pane IDs before retiring the
 source. Other panes and tabs stay open.
 
+On native Windows, Teleport sends an encoded PowerShell launch script and runs the
+current Pi installation directly. This preserves literal Windows paths and handoff
+environment values, and lets Herdr observe Pi's own readiness PID instead of an npm
+wrapper. A separate hidden PowerShell process retires the source pane and removes
+its session file. Windows handoffs do not require a POSIX shell.
+
 If the source is the last pane in a primary-checkout workspace, Teleport first creates
 a shell tab there with `--no-focus`. Linked-worktree and plain-directory workspaces
 do not get replacement shells when their last pane leaves.
@@ -153,3 +159,7 @@ npm test                 # unit tests
 npm run typecheck        # TypeScript check
 npm run test:integration # real Pi process tests
 ```
+
+The launcher regressions in `src/launch.test.ts` execute real shell commands.
+PowerShell cases use Windows PowerShell on Windows and `pwsh` on Unix; they skip
+when that shell is unavailable.
