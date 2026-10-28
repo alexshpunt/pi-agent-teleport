@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { abortArrival, commitArrival, stageArrival } from "./bridge.ts";
+import { abortArrival, commitArrival, stageArrival, watchArrival } from "./bridge.ts";
 import { readState, writeState } from "./core.ts";
 import { runHerdr } from "./herdr.ts";
 import { runtimeFingerprint } from "./remote.ts";
@@ -52,6 +52,74 @@ function arrival(configure?: (input: Parameters<typeof stageArrival>[0], stateDi
   const prepared = stageArrival(input);
   return { prepared, stateDir, previous };
 }
+
+test("a live arrival stays pending until startup confirms readiness", async () => {
+  vi.useFakeTimers();
+  try {
+    const watch = watchArrival({
+      observe: () => ({ shell_pid: 10, foreground_process_group_id: 20, foreground_processes: [{ pid: 20, cwd: "/destination" }] }),
+      output: () => undefined,
+    });
+    let completed = false;
+    const result = watch.ready.then(() => { completed = true; });
+    await vi.advanceTimersByTimeAsync(240_000);
+    expect(completed).toBe(false);
+    watch.resolve();
+    await result;
+    expect(completed).toBe(true);
+  } finally { vi.useRealTimers(); }
+});
+
+test("waiting for a shell to launch Pi has no elapsed-time failure", async () => {
+  vi.useFakeTimers();
+  try {
+    const watch = watchArrival({
+      observe: () => ({ shell_pid: 10, foreground_process_group_id: 10 }),
+      output: () => undefined,
+    });
+    let settled = false;
+    const result = watch.ready.then(() => { settled = true; }, () => { settled = true; });
+    await vi.advanceTimersByTimeAsync(180_000);
+    expect(settled).toBe(false);
+    watch.resolve();
+    await result;
+  } finally { vi.useRealTimers(); }
+});
+test("a temporary observation failure does not reject a living arrival", async () => {
+  vi.useFakeTimers();
+  try {
+    const watch = watchArrival({ observe: () => { throw new Error("Observation unavailable"); }, output: () => undefined });
+    let settled = false;
+    const result = watch.ready.then(() => { settled = true; }, () => { settled = true; });
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(settled).toBe(false);
+    watch.resolve();
+    await result;
+    expect(settled).toBe(true);
+  } finally { vi.useRealTimers(); }
+});
+
+test("a confirmed process exit or explicit rejection still fails the arrival", async () => {
+  vi.useFakeTimers();
+  try {
+    let exited = false;
+    const watch = watchArrival({
+      observe: () => exited ? { shell_pid: 10, foreground_process_group_id: 10 } : { shell_pid: 10, foreground_process_group_id: 20, foreground_processes: [{ pid: 20 }] },
+      output: () => "fixture-destination-failure",
+    });
+    const failure = watch.ready.catch((error) => error);
+    await vi.advanceTimersByTimeAsync(2_000);
+    exited = true;
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await failure).toBeInstanceOf(Error);
+    expect((await failure).message).toContain("fixture-destination-failure");
+    const rejected = watchArrival({ observe: () => undefined, output: () => undefined });
+    const reason = new Error("fixture-explicit-rejection");
+    const result = rejected.ready.catch((error) => error);
+    rejected.reject(reason);
+    expect(await result).toBe(reason);
+  } finally { vi.useRealTimers(); }
+});
 
 test("an arrival does not publish completed history before destination readiness", () => {
   const { prepared, stateDir, previous } = arrival();

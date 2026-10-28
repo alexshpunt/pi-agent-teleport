@@ -19,9 +19,17 @@ Create results and history include the resource ID needed for removal. Machine
 identity qualifies remote locations and resource ownership, so identical filesystem
 paths on different hosts are not treated as the same location.
 
-Pi exposes in-process session replacement only to command contexts. Teleport dispatches
-a private one-shot command after `agent_settled`, not while a prompt is running.
-That command is transport plumbing, not a supported user API.
+Pi exposes in-process session replacement only to command contexts. When a move is
+queued, Teleport lets every sibling tool finish in the source folder, then aborts
+the response loop at `turn_end`. This also handles moves issued alongside Codemode:
+Pi only honors a tool's `terminate` result when every sibling agrees to terminate.
+If messages are already queued, Teleport leaves Pi's delivery policy unchanged:
+Pi processes the queue at the source before the move. It does not abort that turn,
+because TUI abort clears the full queue while the public preview exposes only the
+next message.
+
+Teleport dispatches a private one-shot command after `agent_settled`, not while a
+prompt is running. That command is transport plumbing, not a supported user API.
 
 ## Delayed move output
 
@@ -64,6 +72,12 @@ The destination waits for handoff commit before continuing. Teleport confirms th
 native process and saves explicit workspace, tab and pane IDs before retiring the
 source. Other panes and tabs stay open.
 
+On native Windows, Teleport sends an encoded PowerShell launch script and runs the
+current Pi installation directly. This preserves literal Windows paths and handoff
+environment values, and lets Herdr observe Pi's own readiness PID instead of an npm
+wrapper. A separate hidden PowerShell process retires the source pane and removes
+its session file. Windows handoffs do not require a POSIX shell.
+
 If the source is the last pane in a primary-checkout workspace, Teleport first creates
 a shell tab there with `--no-focus`. Linked-worktree and plain-directory workspaces
 do not get replacement shells when their last pane leaves.
@@ -103,6 +117,11 @@ Local startup reconciliation retains the source of a prepared transition, clears
 finished local transitions, and drops missing local sessions or resources. Foreign
 resources remain recorded until checked on their owning machine.
 
+Startup readiness, controller responses and commit receipts have no waiting deadline.
+The source remains available until the destination reports usable startup. A launch-exit
+receipt catches failures even before the first process observation. Slow startup hooks
+and temporary observation failures do not trigger rollback.
+
 Known pre-commit failures roll back only the attempted destination and restore the
 previous state. Unknown stage, commit, cleanup or return outcomes keep a persistent
 source fence: do not resume a second competing agent or blindly retry.
@@ -111,7 +130,7 @@ For an unconfirmed handoff:
 
 1. Keep the source idle and preserve its files.
 2. Inspect the operation's saved receipt and the exact recorded destination session
-   and native Herdr pane. A timeout alone proves neither failure nor success.
+   and native Herdr pane. Elapsed time alone proves neither failure nor success.
 3. Establish which destination committed before deciding where to continue.
 4. Clean up only resources recorded as owned by that operation.
 
@@ -140,3 +159,7 @@ npm test                 # unit tests
 npm run typecheck        # TypeScript check
 npm run test:integration # real Pi process tests
 ```
+
+The launcher regressions in `src/launch.test.ts` execute real shell commands.
+PowerShell cases use Windows PowerShell on Windows and `pwsh` on Unix; they skip
+when that shell is unavailable.

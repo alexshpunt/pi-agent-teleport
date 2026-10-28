@@ -6,9 +6,11 @@ import teleport from "./index.ts";
 import { readState } from "./core.ts";
 import { getHerdrContext } from "./herdr.ts";
 import { probeRemote, remoteMachine, startRemoteMove, UnknownRemoteOutcome } from "./remote.ts";
+import { preflightSession } from "./readiness.ts";
 
 vi.mock("./herdr.ts", async (original) => ({ ...await original<typeof import("./herdr.ts")>(), getHerdrContext: vi.fn(), assertHerdrContext: vi.fn() }));
 vi.mock("./remote.ts", async (original) => ({ ...await original<typeof import("./remote.ts")>(), probeRemote: vi.fn(), remoteMachine: vi.fn(), startRemoteMove: vi.fn() }));
+vi.mock("./readiness.ts", async (original) => ({ ...await original<typeof import("./readiness.ts")>(), preflightSession: vi.fn() }));
 let root: string;
 beforeEach(() => { vi.resetAllMocks(); mkdirSync(resolve(".tmp"), { recursive: true }); root = mkdtempSync(resolve(".tmp/deferred-")); vi.stubEnv("PI_CODING_AGENT_DIR", join(root, "agent")); });
 afterEach(() => { vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); });
@@ -26,10 +28,13 @@ async function fixture() {
   const ctx = {
     cwd: root,
     sessionManager: { getSessionId: () => header.id, getHeader: () => header, getSessionFile: () => file, getSessionName: () => undefined, getEntries: () => entries, getBranch: () => entries },
-    ui: { notify: vi.fn() }, isIdle: () => true, switchSession: vi.fn(async () => ({ cancelled: true })), shutdown: vi.fn(),
+    ui: { notify: vi.fn(), setStatus: vi.fn() }, isIdle: () => true, switchSession: vi.fn(async () => ({ cancelled: true })), shutdown: vi.fn(),
   };
   teleport({
-    on: (name: string, fn: Function) => { events.set(name, fn); },
+    on: (name: string, fn: Function) => {
+      const previous = events.get(name);
+      events.set(name, previous ? (...args: any[]) => { previous(...args); return fn(...args); } : fn);
+    },
     registerCommand: (name: string, definition: any) => { commands.set(name, definition); },
     registerTool: (definition: ToolDefinition) => { tool = definition; }, registerEntryRenderer: () => {},
     appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
@@ -72,4 +77,19 @@ test("a cancelled local switch retains the source and reports failure rather tha
   expect(readState(f.stateDir).transition).toBeUndefined();
   expect(f.entries.at(-1).data).toMatchObject({ parentToolCallId: "root", status: "failed", text: "Teleport failed: Teleport was cancelled." });
   expect(f.messages).toHaveLength(1);
+});
+
+test("a destination that cannot start leaves the session untouched and reports its exact reason", async () => {
+  vi.mocked(preflightSession).mockRejectedValue(new Error("Destination Pi exited before it was ready (exit code 3).\nDestination output:\nsettings.json: Unexpected token"));
+  const f = await fixture();
+  const target = join(root, "target");
+  mkdirSync(target);
+  await f.queue(target);
+  expect(vi.mocked(preflightSession).mock.calls[0][0]).toMatchObject({ target });
+  expect(f.ctx.switchSession).not.toHaveBeenCalled();
+  expect(f.ctx.shutdown).not.toHaveBeenCalled();
+  expect(readState(f.stateDir).transition).toBeUndefined();
+  expect(f.entries.at(-1).data).toMatchObject({ status: "failed" });
+  expect(f.entries.at(-1).data.text).toContain("settings.json: Unexpected token");
+  expect(f.messages[0].content).toContain("settings.json: Unexpected token");
 });
