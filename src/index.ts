@@ -233,33 +233,33 @@ export default function teleport(pi: ExtensionAPI) {
   type PendingOperation = { action: "jump" | "back"; target?: string; execution: TeleportExecution };
   const pending = new Map<string, PendingOperation>();
   let queuedToken: string | undefined;
+  let stoppingForMove = false;
 
   // Pi only honors terminate when every sibling tool agrees. Wait for the full
   // batch to finish, then abort the source response loop before the handoff.
   pi.on("turn_end", (event, ctx) => {
-    if (!queuedToken) return;
-    // TUI abort restores queued user messages to the source editor. Save them
-    // in the transcript first so closing that pane cannot lose instructions.
-    const entries = [...event.entries];
-    for (const message of event.context.pendingMessages) {
-      if (message.role === "user") entries.push({
-        type: "custom_message", customType: "Queued user message",
-        content: message.content, display: true,
-      });
-      else if (message.role === "custom") entries.push({
-        type: "custom_message", customType: message.customType,
-        content: message.content, display: message.display, details: message.details,
-      });
+    // Preserve Pi's queue delivery policy. Its public preview only exposes the
+    // next queued message, and TUI abort would clear the entire queue.
+    const needsStop = event.toolResults.length > 1 || event.toolResults.some((result) => result.toolName !== "teleport");
+    if (queuedToken && needsStop && !ctx.hasPendingMessages() && event.context.pendingMessages.length === 0) {
+      stoppingForMove = true;
+      ctx.abort();
     }
-    const draft = ctx.ui.getEditorText();
-    ctx.abort();
-    ctx.ui.setEditorText(draft);
-    return { entries };
+  });
+  // Pi may synthesize an empty error response when its next-turn preparation
+  // observes our abort. This is an intentional handoff stop, not a model failure.
+  pi.on("message_end", (event, ctx) => {
+    const message = event.message;
+    if (stoppingForMove && ctx.signal?.aborted && message.role === "assistant" &&
+        message.content.length === 0 && ["aborted", "error"].includes(message.stopReason)) {
+      return { message: { ...message, stopReason: "stop", errorMessage: undefined } };
+    }
   });
   // Slash commands execute immediately in Pi, even with followUp delivery.
   // Wait until the tool turn has fully settled before replacing its session.
   pi.on("agent_settled", (_event, ctx) => {
     if (!queuedToken || !ctx.isIdle()) return;
+    stoppingForMove = false;
     const token = queuedToken;
     queuedToken = undefined;
     pi.sendUserMessage(`/__teleport_internal ${token}`, { deliverAs: "followUp", expandPromptTemplates: true });
