@@ -31,7 +31,10 @@ async function fixture() {
     ui: { notify: vi.fn(), setStatus: vi.fn() }, isIdle: () => true, switchSession: vi.fn(async () => ({ cancelled: true })), shutdown: vi.fn(),
   };
   teleport({
-    on: (name: string, fn: Function) => { events.set(name, fn); },
+    on: (name: string, fn: Function) => {
+      const previous = events.get(name);
+      events.set(name, previous ? (...args: any[]) => { previous(...args); return fn(...args); } : fn);
+    },
     registerCommand: (name: string, definition: any) => { commands.set(name, definition); },
     registerTool: (definition: ToolDefinition) => { tool = definition; }, registerEntryRenderer: () => {},
     appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
