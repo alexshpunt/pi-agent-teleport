@@ -13,7 +13,6 @@ const sourceDir = dirname(fileURLToPath(import.meta.url));
 export const extensionFile = join(sourceDir, "index.ts");
 export const workerFile = join(sourceDir, "bridge.ts");
 export const MAX_PACKET = 64 * 1024 * 1024;
-export const HANDOFF_TIMEOUT = 45_000;
 
 /** An unconfirmed commit must leave the source idle, not launch a competing continuation. */
 export class UnknownRemoteOutcome extends Error {}
@@ -49,7 +48,7 @@ export function agentDirectory(): string { return process.env.PI_CODING_AGENT_DI
 /** Fingerprint executable Teleport files, not Pi or unrelated extensions. */
 export function runtimeFingerprint(): string {
   const hash = createHash("sha256");
-  for (const name of ["index.ts", "core.ts", "herdr.ts", "remote.ts", "bridge.ts", "output.ts"]) hash.update(name).update(readFileSync(join(sourceDir, name)));
+  for (const name of ["index.ts", "core.ts", "herdr.ts", "readiness.ts", "remote.ts", "bridge.ts", "output.ts"]) hash.update(name).update(readFileSync(join(sourceDir, name)));
   return hash.digest("hex");
 }
 
@@ -79,7 +78,7 @@ export function hasSessionProcess(processes: Array<{ pid: number; cwd?: string; 
   });
 }
 /** Send one bounded authenticated message over an owned Unix socket. */
-export function requestController(route: Pick<ReturnRoute, "socket" | "token">, payload: Record<string, unknown>, timeout = HANDOFF_TIMEOUT): Promise<any> {
+export function requestController(route: Pick<ReturnRoute, "socket" | "token">, payload: Record<string, unknown>): Promise<any> {
   return new Promise((resolve, reject) => {
     const message = `${JSON.stringify({ ...payload, token: route.token })}\n`;
     if (Buffer.byteLength(message) > MAX_PACKET) { reject(new Error("Teleport session exceeds the 64 MiB transfer limit.")); return; }
@@ -87,7 +86,6 @@ export function requestController(route: Pick<ReturnRoute, "socket" | "token">, 
     let content = "";
     let submitted = false;
     socket.setEncoding("utf8");
-    socket.setTimeout(timeout, () => socket.destroy(new Error("Teleport controller timed out. Keep the current session and inspect the handoff before retrying.")));
     socket.on("connect", () => { submitted = true; socket.write(message); });
     socket.on("data", (chunk: string) => {
       content += chunk;
@@ -109,15 +107,21 @@ export function requestController(route: Pick<ReturnRoute, "socket" | "token">, 
 
 /** Release an arrival only after its source publishes a durable commit, even if the readiness acknowledgement was lost. */
 export async function confirmArrival(handoff: Pick<ReturnRoute, "socket" | "token"> & { commitFile: string }, ready: Record<string, unknown>): Promise<void> {
-  try { await requestController(handoff, { ...ready, action: "ready" }); }
-  catch (error) { if (!(error instanceof UnknownRemoteOutcome)) throw error; }
-  await waitForReceipt(handoff.commitFile, HANDOFF_TIMEOUT + 30_000);
+  if (!existsSync(handoff.commitFile)) {
+    try { await requestController(handoff, { ...ready, action: "ready" }); }
+    catch (error) {
+      // The source may have committed before this acknowledgement was delivered.
+      const transportFailure = typeof (error as NodeJS.ErrnoException).code === "string";
+      if (!existsSync(handoff.commitFile) && !(error instanceof UnknownRemoteOutcome) && !transportFailure) throw error;
+    }
+  }
+  // A timeout alone cannot shut down a living destination. Only the durable source
+  // decision releases it; an unconfirmed source remains fenced while this waits.
+  await waitForReceipt(handoff.commitFile);
 }
 /** Wait for an owned durable receipt, never interpreting a timeout as success. */
-export async function waitForReceipt(path: string, timeout = HANDOFF_TIMEOUT): Promise<any> {
-  const deadline = Date.now() + timeout;
+export async function waitForReceipt(path: string): Promise<any> {
   while (!existsSync(path)) {
-    if (Date.now() >= deadline) throw new UnknownRemoteOutcome(`Teleport outcome is unconfirmed. Keep the source idle and inspect ${path} before retrying.`);
     await new Promise((r) => setTimeout(r, 50));
   }
   let result: any;
@@ -137,7 +141,7 @@ export const sshOptions = ["-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChec
 export function probeRemote(host: string, path: string, expectedFingerprint: string): { fingerprint: string; worker: string; agentDir: string; version: string } {
   const nonce = randomUUID();
   const prefix = `PI_TELEPORT_PROBE:${nonce}:`;
-  const output = execFileSync("ssh", [...sshOptions, host, `cd ${shellQuote(path)} && PI_TELEPORT_PROBE=${shellQuote(nonce)} pi --approve --help`], { encoding: "utf8", timeout: 30_000, maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  const output = execFileSync("ssh", [...sshOptions, host, `cd ${shellQuote(path)} && PI_TELEPORT_PROBE=${shellQuote(nonce)} pi --approve --help`], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
   const probes = output.split("\n").filter((line) => line.startsWith(prefix)).map((line) => JSON.parse(line.slice(prefix.length)));
   if (probes.length !== 1 || probes[0].fingerprint !== expectedFingerprint || (!probes[0].worker?.startsWith("/") || !probes[0].agentDir?.startsWith("/"))) {
     throw new Error(`Install or update Teleport on ${host} to this implementation, then retry. A usable current Teleport is required for the return journey. The source is unchanged.`);
@@ -166,5 +170,5 @@ export async function startRemoteMove(move: RemoteMove): Promise<any> {
     worker.once("error", (error) => writeFileSync(join(dir, "result.json"), JSON.stringify({ ok: false, error: `Could not start the Teleport controller: ${error.message}` }), { mode: 0o600, flag: "wx" }));
     worker.unref();
   } finally { closeSync(log); }
-  return waitForReceipt(join(dir, "result.json"), HANDOFF_TIMEOUT * 4);
+  return waitForReceipt(join(dir, "result.json"));
 }
