@@ -6,9 +6,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mergeMachineResources, prepareHerdrArrival, preserveHerdrSourceWorkspace, readState, writeState, type TeleportState } from "./core.ts";
-import { runHerdr, type HerdrContext } from "./herdr.ts";
+import { guardedLaunch, readHerdrPane, runHerdr, shellOwnsForeground, withOutput, type HerdrContext } from "./herdr.ts";
 import type { TeleportExecution } from "./output.ts";
-import { agentDirectory, HANDOFF_TIMEOUT, MAX_PACKET, hasSessionProcess, qualifyLocation, relocateSession, runtimeFingerprint, UnknownRemoteOutcome, shellQuote, sshOptions, validateReady, type ReadyIdentity, type RemoteMove, type ReturnRoute } from "./remote.ts";
+import { agentDirectory, MAX_PACKET, hasSessionProcess, qualifyLocation, relocateSession, runtimeFingerprint, UnknownRemoteOutcome, shellQuote, sshOptions, validateReady, type ReadyIdentity, type RemoteMove, type ReturnRoute } from "./remote.ts";
 
 const implementation = runtimeFingerprint();
 type Arrival = {
@@ -31,6 +31,37 @@ function identity(prepared: Prepared): ReadyIdentity {
   return { operationId: prepared.operationId, sessionId: prepared.sessionId, fingerprint: prepared.fingerprint, cwd: prepared.cwd, sessionFile: prepared.sessionFile, paneId: prepared.location.paneId, agentDir: prepared.agentDir };
 }
 function connection(session: string): HerdrContext { return { session, workspaceId: "", tabId: "", paneId: "" }; }
+
+type ArrivalProcessInfo = { shell_pid?: number; foreground_process_group_id?: number; foreground_processes?: Array<{ pid: number; cwd?: string; argv?: string[] }> };
+
+/** Observe launch without turning a missing callback or transient query failure into rollback. */
+export function watchArrival(input: { failure?: () => string | undefined; observe: () => ArrivalProcessInfo | undefined; output: () => string | undefined }): { ready: Promise<void>; resolve: () => void; reject: (error: Error) => void } {
+  let running = false;
+  let settled = false;
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const ready = new Promise<void>((accept, refuse) => { resolve = accept; reject = refuse; });
+  const finish = (error?: Error) => {
+    if (settled) return;
+    settled = true;
+    clearInterval(poll);
+    if (error) reject(error); else resolve();
+  };
+  const poll = setInterval(() => {
+    try {
+      const failure = input.failure?.();
+      if (failure) { finish(new Error(withOutput(failure, input.output()))); return; }
+      const info = input.observe();
+      if (!info) return;
+      if (info.foreground_processes?.length && !shellOwnsForeground(info)) running = true;
+      else if (shellOwnsForeground(info) && running) {
+        finish(new Error(withOutput("Destination Pi exited before it was ready. The source is retained.", input.output())));
+        return;
+      }
+    } catch { /* Observation failed; no destination failure has been established. */ }
+  }, 2_000);
+  return { ready, resolve: () => finish(), reject: (error) => finish(error) };
+}
 
 /** Stage only owned files and a new native Herdr arrival; do not activate the conversation. */
 export function stageArrival(input: Arrival): Prepared {
@@ -66,7 +97,7 @@ export function stageArrival(input: Arrival): Prepared {
     state.history.push({ from: input.from, to: input.to, at: Date.now(), status: "completed", toHerdr: prepared.location });
     save(join(dir, "next-state.json"), state);
     save(join(dir, "handoff.json"), { ...input.callback, ...identity(prepared), commitFile: join(dir, "committed.json"), execution: input.execution });
-    runHerdr(input.connection, ["pane", "run", prepared.location.paneId, `PI_CODING_AGENT_DIR=${shellQuote(prepared.agentDir)} PI_TELEPORT_HANDOFF=${shellQuote(join(dir, "handoff.json"))} pi --approve --session ${shellQuote(sessionFile)}`]);
+    runHerdr(input.connection, ["pane", "run", prepared.location.paneId, guardedLaunch(`PI_CODING_AGENT_DIR=${shellQuote(prepared.agentDir)} PI_TELEPORT_HANDOFF=${shellQuote(join(dir, "handoff.json"))} pi --approve --session ${shellQuote(sessionFile)}`, join(dir, "exited.json"))]);
     return prepared;
   } catch (error) {
     if (!destination) throw new UnknownRemoteOutcome(`Native arrival preparation is unconfirmed. Inspect ${dir} and the destination Herdr state before retrying.`);
@@ -103,6 +134,10 @@ function endpoint(action: string, input: any): any {
     return { dir, socket: join(dir, "return.sock") };
   }
   if (action === "stage") return stageArrival({ ...input, dormantSource: undefined });
+  if (action === "failure") {
+    const receipt = join(input.dir, "exited.json");
+    return { error: existsSync(receipt) ? JSON.parse(readFileSync(receipt, "utf8")).error : undefined };
+  }
   if (action === "commit") { commitArrival(input); return { committed: true }; }
   if (action === "abort") { abortArrival(input); return { aborted: true }; }
   if (action === "status") return { committed: existsSync(join(input.dir, "committed.json")) };
@@ -132,7 +167,7 @@ function remoteEndpoint<T = any>(move: RemoteMove, action: string, input: unknow
   let output: string;
   try {
     output = execFileSync("ssh", [...sshOptions, move.host, `PI_CODING_AGENT_DIR=${shellQuote(move.remoteAgentDir)} node --experimental-strip-types ${shellQuote(move.remoteWorker)} endpoint ${shellQuote(action)}`], {
-      input: JSON.stringify(input), encoding: "utf8", timeout: 30_000, maxBuffer: MAX_PACKET, stdio: ["pipe", "pipe", "pipe"],
+      input: JSON.stringify(input), encoding: "utf8", maxBuffer: MAX_PACKET, stdio: ["pipe", "pipe", "pipe"],
     });
   } catch (error) {
     const response = (error as { stdout?: string }).stdout;
@@ -161,6 +196,7 @@ async function controller(config: string): Promise<void> {
   let committed = false;
   let returning = false;
   let pending: { expected: ReadyIdentity; resolve: () => void; reject: (error: Error) => void; remote: boolean } | undefined;
+  const accepted = new Map<string, { expected: ReadyIdentity; remote: boolean }>();
   let closed = false;
   let reconnects = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -168,7 +204,6 @@ async function controller(config: string): Promise<void> {
     let content = "";
     let received = false;
     socket.setEncoding("utf8");
-    socket.setTimeout(HANDOFF_TIMEOUT, () => socket.destroy());
     socket.on("error", () => {});
     socket.on("data", (chunk: string) => {
       content += chunk;
@@ -182,22 +217,31 @@ async function controller(config: string): Promise<void> {
     try {
       const packet = JSON.parse(content);
       if (typeof packet.token !== "string" || packet.token.length !== token.length || !timingSafeEqual(Buffer.from(packet.token), Buffer.from(token))) throw new Error("Unauthenticated Teleport callback.");
+      if (packet.action === "failed") {
+        // The destination Pi reports why it cannot continue, before it exits.
+        if (!pending || packet.operationId !== pending.expected.operationId || typeof packet.error !== "string") throw new Error("No matching Teleport arrival is awaiting readiness.");
+        pending.reject(new Error(`Destination Pi cannot continue this session: ${packet.error} The source is retained.`));
+        socket.end(`${JSON.stringify({ ok: true })}\n`);
+        return;
+      }
       if (packet.action === "ready") {
-        if (!pending) throw new Error("No Teleport arrival is awaiting readiness.");
+        const arrival = pending?.expected.operationId === packet.operationId ? pending : accepted.get(packet.operationId);
+        if (!arrival) throw new Error("No Teleport arrival is awaiting readiness.");
         try {
-          validateReady(pending.expected, packet);
-          const info = pending.remote
-            ? JSON.parse(execFileSync("herdr", ["--machine", move.machine, "pane", "process-info", "--pane", pending.expected.paneId], { encoding: "utf8", timeout: 15_000 })).result?.process_info
-            : runHerdr(move.herdr, ["pane", "process-info", "--pane", pending.expected.paneId]).process_info;
-          if (!hasSessionProcess(info?.foreground_processes, packet.pid, pending.expected.cwd, pending.expected.sessionFile)) throw new Error("The expected destination Pi is not running in its owned Herdr pane.");
-          pending.resolve();
-          pending = undefined;
+          validateReady(arrival.expected, packet);
+          let info;
+          try { info = paneProcess(arrival.expected.paneId, arrival.remote); }
+          catch { throw new UnknownRemoteOutcome("Destination process observation is unavailable; its handoff remains pending."); }
+          if (!hasSessionProcess(info?.foreground_processes, packet.pid, arrival.expected.cwd, arrival.expected.sessionFile)) throw new Error("The expected destination Pi is not running in its owned Herdr pane.");
+          if (arrival === pending) pending.resolve();
           socket.end(`${JSON.stringify({ ok: true })}\n`);
-        } catch (error) { pending?.reject(error as Error); pending = undefined; throw error; }
+        } catch (error) {
+          if (!(error instanceof UnknownRemoteOutcome) && arrival === pending) pending.reject(error as Error);
+          throw error;
+        }
         return;
       }
       if (packet.action !== "return" || packet.operationId !== move.id || !committed || returning) throw new Error("The return route is not available for this operation.");
-      socket.setTimeout(0); // Preparation/readiness have their own bounded deadlines.
       returning = true;
       let arrival: Prepared | undefined;
       try {
@@ -252,11 +296,25 @@ async function controller(config: string): Promise<void> {
       }
     } catch (error) { socket.end(`${JSON.stringify({ ok: false, uncertain: error instanceof UnknownRemoteOutcome, error: error instanceof Error ? error.message : String(error) })}\n`); }
   }
-  function awaitReady(arrival: Prepared, remote: boolean): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { pending = undefined; reject(new Error("Destination Pi did not confirm current Teleport and session readiness. The source is retained.")); }, HANDOFF_TIMEOUT);
-      pending = { expected: identity(arrival), remote, resolve: () => { clearTimeout(timer); resolve(); }, reject: (error) => { clearTimeout(timer); reject(error); } };
+  function paneProcess(paneId: string, remote: boolean): any {
+    return remote
+      ? JSON.parse(execFileSync("herdr", ["--machine", move.machine, "pane", "process-info", "--pane", paneId], { encoding: "utf8", timeout: 15_000 })).result?.process_info
+      : runHerdr(move.herdr, ["pane", "process-info", "--pane", paneId]).process_info;
+  }
+  /** Wait for startup without a deadline; only confirmed failure permits rollback. */
+  async function awaitReady(arrival: Prepared, remote: boolean): Promise<void> {
+    const watch = watchArrival({
+      failure: () => remote
+        ? remoteEndpoint<{ error?: string }>(move, "failure", arrival).error
+        : endpoint("failure", arrival).error,
+      observe: () => paneProcess(arrival.location.paneId, remote),
+      output: () => readHerdrPane(arrival.location, arrival.location.paneId, remote ? move.machine : undefined),
     });
+    pending = { expected: identity(arrival), remote, resolve: watch.resolve, reject: watch.reject };
+    try {
+      await watch.ready;
+      accepted.set(arrival.operationId, { expected: identity(arrival), remote });
+    } finally { pending = undefined; }
   }
   function reconnectTunnel(): void {
     if (closed || reconnectTimer) return;
@@ -276,11 +334,11 @@ async function controller(config: string): Promise<void> {
     if (!reservation) throw new Error("No owned remote return socket was reserved.");
     const transport = spawn("ssh", [...sshOptions, "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-N", "-R", `${reservation.socket}:${localSocket}`, move.host], { stdio: ["ignore", "ignore", "inherit"] });
     tunnel = transport;
-    transport.once("error", (error) => { if (!committed) pending?.reject(error); });
+    transport.once("error", (error) => { console.error(`Teleport return channel unavailable: ${error.message}`); });
     transport.once("close", () => {
       if (closed || transport !== tunnel) return;
-      if (!committed) pending?.reject(new Error("Teleport's SSH return channel disconnected before commit."));
-      else reconnectTunnel();
+      // Channel loss does not establish that the destination failed to start.
+      reconnectTunnel();
     });
   }
   function cleanup(): void {
