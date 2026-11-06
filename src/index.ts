@@ -192,7 +192,7 @@ export default function teleport(pi: ExtensionAPI) {
         prepared = prepareHerdrDestination(context, target, resource?.herdr, ctx.sessionManager.getSessionName());
         const location = prepared.location;
         const continuation = Buffer.from(JSON.stringify({ execution, from: qualifyLocation(sourceCwd, state.machine), to: qualifyLocation(target, state.machine), receipt }), "utf8").toString("base64url");
-        runHerdr(context, ["pane", "run", location.paneId, guardedLaunch([...(process.platform === "win32" ? piCommand() : ["pi"]), "--approve", "--session", destination], receipt, { PI_CODING_AGENT_DIR: agentDirectory(), PI_TELEPORT_CONTINUATION: continuation })]);
+        runHerdr(context, ["pane", "run", location.paneId, guardedLaunch([...(context.backend === "app" || process.platform === "win32" ? piCommand() : ["pi"]), "--approve", "--session", destination], receipt, { PI_CODING_AGENT_DIR: agentDirectory(), PI_TELEPORT_CONTINUATION: continuation })]);
         // The destination stays gated until this commit; the source retires only after its own readiness verdict.
         await awaitHerdrArrival(context, location.paneId, destination, receipt);
         state = readState(dir);
