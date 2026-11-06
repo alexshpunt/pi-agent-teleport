@@ -103,6 +103,16 @@ session, including wrappers, and reads each process's current directory from the
 OS. The observer needs permission to read those processes' `/proc` entries; a
 separate user namespace can prevent this even with the same numeric UID.
 
+Native Windows uses 64-bit Windows PowerShell and a read-only process-tree
+observer. It reads live PID, current directory and argv from process memory,
+checks creation times and repeated snapshots, and reports an explicit idle/busy
+verdict: ConPTY has no Unix foreground group. The observer excludes itself and
+identifies the system console host by its native executable path, not its name.
+Other descendants, including user programs named conhost.exe, remain occupants.
+An unreadable or changing descendant, including WOW64, is busy/unknown; an
+unreadable root is an error. The child PowerShell's execution policy applies only
+to that process and does not change host settings.
+
 Local App handoffs launch the current Node executable and Pi entry point directly,
 preserving runtime flags and the captured agent directory. A login-shell `pi` wrapper
 cannot replace that profile at the destination. Legacy Unix launches are unchanged.
@@ -146,9 +156,9 @@ PATH. `appSsh.session` selects the desktop's core/App session; it defaults to
 settings are separate from the remote core's environment. SSH host-key checks stay
 enabled and the SSH agent is never forwarded. No public App endpoint is added.
 
-The adapter is under development. Two-machine route validation is pending, and
-non-Linux process observation is not yet implemented. The legacy integration above
-is unchanged.
+Native App process observation is not implemented on macOS. App operations that
+require foreground ownership fail closed there. The legacy integration above is
+unchanged.
 
 ## Remote activation and return
 
