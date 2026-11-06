@@ -1,16 +1,17 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { expect, test } from "vitest";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { retireAppSource } from "../src/bridge.ts";
 import { startAppSourceCleanup } from "../src/remote.ts";
 import { runApp, appSpaces } from "../src/app.ts";
 import { createManagedWorktree, prepareHerdrDestination, preserveHerdrSourceWorkspace, readState, removeManagedWorktree } from "../src/core.ts";
 import { coreEnvironment, getHerdrContext, guardedLaunch, herdrLocation, isHerdrShell, readHerdrPane, runHerdr, type HerdrContext } from "../src/herdr.ts";
 
-async function until<T>(observe: () => T | undefined): Promise<T> {
-  const deadline = Date.now() + 15_000;
+async function until<T>(observe: () => T | undefined, timeout = 15_000): Promise<T> {
+  const deadline = Date.now() + timeout;
   while (true) {
     const result = observe();
     if (result !== undefined) return result;
@@ -126,3 +127,99 @@ test.runIf(process.env.PI_TEST_HERDR_APP === "1")("the real App adapter creates,
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+
+test.runIf(process.env.PI_TEST_HERDR_APP === "1")("a real Pi moves between its native App terminals, continues once and retires only its source", async () => {
+  if (!process.env.HERDR_APP_HOME?.includes("lpt1201-adapter")) throw new Error("This test requires its task-owned App sandbox.");
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "teleport-app-pi-")));
+  const sourceCwd = join(directory, "source");
+  const target = join(directory, "destination");
+  const agentDir = join(directory, "agent");
+  for (const path of [sourceCwd, target, agentDir]) mkdirSync(path);
+  const root = join(dirname(import.meta.filename), "..");
+  writeFileSync(join(agentDir, "native-app.json"), JSON.stringify({ target }));
+  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({
+    extensions: [join(root, "src", "index.ts"), join(root, "test", "fixtures", "native-app-provider.ts")],
+    defaultProvider: "native-app", defaultModel: "native-app-model", quietStartup: true,
+  }));
+  const connection: HerdrContext = { backend: "app", workspaceId: "", tabId: "", paneId: "", session: process.env.HC_SESSION!, stateHome: process.env.XDG_STATE_HOME, configHome: process.env.XDG_CONFIG_HOME, runtimeDir: process.env.XDG_RUNTIME_DIR, appHome: process.env.HERDR_APP_HOME, appCli: process.env.PI_HERDR_APP_CLI };
+  const spaces = new Set<string>();
+  const json = (path: string) => JSON.parse(readFileSync(path, "utf8"));
+  const manager = SessionManager.create(sourceCwd, join(agentDir, "sessions"));
+  manager.appendCustomEntry("native-app-seed", { sentinel: directory });
+  const initialSession = manager.getSessionFile()!;
+  writeFileSync(initialSession, [manager.getHeader(), ...manager.getEntries()].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+  let source: HerdrContext | undefined;
+  let stateDir: string | undefined;
+  try {
+    source = herdrLocation(connection, runHerdr(connection, ["workspace", "create", "--cwd", sourceCwd, "--label", "Native Pi source", "--no-focus"]));
+    spaces.add(source.workspaceId);
+    await until(() => isHerdrShell(source!, source!.paneId) ? true : undefined);
+    const cli = join(root, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js");
+    const prompt = `Preserve native conversation ${directory} and move to the destination.`;
+    runHerdr(source, ["pane", "run", source.paneId, guardedLaunch([process.execPath, cli, "--approve", "--session", initialSession, prompt], join(directory, "source-exit.json"), { PI_CODING_AGENT_DIR: agentDir })]);
+    const started = await until(() => existsSync(join(agentDir, "started-source.json")) ? json(join(agentDir, "started-source.json")) : undefined);
+    stateDir = join(agentDir, "teleport", started.sessionId);
+    const observed = runHerdr(source, ["pane", "process-info", "--pane", source.paneId]).process_info;
+    expect(observed.foreground_processes).toEqual(expect.arrayContaining([expect.objectContaining({ pid: started.pid, cwd: sourceCwd })]));
+    expect(started.sessionFile).toBe(initialSession);
+    expect(existsSync(initialSession)).toBe(true);
+    writeFileSync(join(agentDir, "go"), "continue\n");
+    const settledFile = join(agentDir, "settled-destination.json");
+    await until(() => existsSync(settledFile) ? true : undefined, 60_000);
+    const state = readState(stateDir);
+    const arrival = json(join(agentDir, "started-destination.json"));
+    const settled = json(settledFile);
+    const destination = state.active!.herdr!;
+    spaces.add(destination.workspaceId);
+    expect(state.transition).toBeUndefined();
+    expect(state.active).toMatchObject({ cwd: target, sessionFile: arrival.sessionFile });
+    expect(state.history).toHaveLength(1);
+    expect(state.history[0]).toMatchObject({ from: sourceCwd, to: target, status: "completed", fromHerdr: { paneId: source.paneId }, toHerdr: { paneId: destination.paneId } });
+    expect(arrival.sessionId).toBe(started.sessionId);
+    expect(arrival.pid).not.toBe(started.pid);
+    expect(arrival.entryPoint).toBe(started.entryPoint);
+    expect(settled.header).toMatchObject({ id: started.sessionId, cwd: target });
+    const entries = settled.entries as any[];
+    expect(entries.filter((entry) => entry.customType === "native-app-seed")).toEqual([expect.objectContaining({ data: { sentinel: directory } })]);
+    expect(entries.filter((entry) => entry.customType === "pi-agent-teleport-continuation")).toHaveLength(1);
+    expect(entries.filter((entry) => entry.message?.role === "user").some((entry) => entry.message.content.some((part: any) => part.text === prompt))).toBe(true);
+    expect(entries.filter((entry) => entry.message?.role === "assistant" && entry.message.content.some((part: any) => part.type === "text"))).toHaveLength(1);
+    const nativeDestination = runHerdr(destination, ["pane", "process-info", "--pane", destination.paneId]).process_info;
+    expect(nativeDestination.foreground_processes).toEqual(expect.arrayContaining([expect.objectContaining({ pid: arrival.pid, cwd: target })]));
+    await until(() => !existsSync(initialSession) ? true : undefined);
+    expect(() => process.kill(started.pid, 0)).toThrow();
+    expect(appSpaces(connection).flatMap((space) => space.tabs.flatMap((tab) => tab.terminals)).some((terminal) => terminal.terminal === source!.paneId)).toBe(false);
+    const screen = readHerdrPane(destination, destination.paneId);
+    expect(screen).toContain(target);
+    if (process.env.PI_TEST_APP_SHOT) {
+      runApp(destination, ["do", "agent.focus", JSON.stringify({ terminal: destination.paneId })]);
+      execFileSync(destination.appCli!, ["shot", process.env.PI_TEST_APP_SHOT.replace(/\.png$/, "-pi.png")], { env: coreEnvironment(destination), stdio: "pipe" });
+    }
+  } catch (error) {
+    const safe = (observe: () => unknown) => { try { return observe(); } catch (failure) { return String(failure); } };
+    throw new Error(JSON.stringify({ error: String(error), files: readdirSync(agentDir), state: stateDir ? safe(() => readState(stateDir!)) : undefined,
+      sourceScreen: source ? safe(() => readHerdrPane(source!, source!.paneId)) : undefined,
+      exit: existsSync(join(directory, "source-exit.json")) ? json(join(directory, "source-exit.json")) : undefined }));
+  } finally {
+    for (const side of ["source", "destination"]) {
+      const file = join(agentDir, `started-${side}.json`);
+      if (!existsSync(file)) continue;
+      const processInfo = json(file);
+      try {
+        if (readlinkSync(`/proc/${processInfo.pid}/cwd`) !== processInfo.cwd) continue;
+        process.kill(processInfo.pid, "SIGTERM");
+      } catch (error) { if (!["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error; }
+      await until(() => { try { process.kill(processInfo.pid, 0); return undefined; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; } });
+    }
+    // Record a partially created destination too, without touching other sandbox spaces.
+    if (stateDir) {
+      const state = readState(stateDir);
+      if (state.active?.herdr) spaces.add(state.active.herdr.workspaceId);
+    }
+    for (const id of spaces) {
+      if (appSpaces(connection).some((space) => space.id === id)) runApp(connection, ["do", "space.close", JSON.stringify({ id, confirmed: true })]);
+    }
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 90_000);

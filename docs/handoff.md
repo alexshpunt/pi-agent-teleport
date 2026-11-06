@@ -103,6 +103,10 @@ session, including wrappers, and reads each process's current directory from the
 OS. The observer needs permission to read those processes' `/proc` entries; a
 separate user namespace can prevent this even with the same numeric UID.
 
+Local App handoffs launch the current Node executable and Pi entry point directly,
+preserving runtime flags and the captured agent directory. A login-shell `pi` wrapper
+cannot replace that profile at the destination. Legacy Unix launches are unchanged.
+
 App source retirement runs in a detached worker with the saved connection and
 without the source terminal's sweep scope. It verifies the recorded PID, current
 directory and session argument, or confirms that the source exited and its shell
