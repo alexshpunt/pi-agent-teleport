@@ -55,7 +55,7 @@ export function agentDirectory(): string { return process.env.PI_CODING_AGENT_DI
 /** Fingerprint executable Teleport files, not Pi or unrelated extensions. */
 export function runtimeFingerprint(): string {
   const hash = createHash("sha256");
-  for (const name of ["index.ts", "core.ts", "herdr.ts", "app.ts", "readiness.ts", "remote.ts", "bridge.ts", "output.ts"]) hash.update(name).update(readFileSync(join(sourceDir, name)));
+  for (const name of ["index.ts", "core.ts", "herdr.ts", "app.ts", "process-info.ps1", "readiness.ts", "remote.ts", "bridge.ts", "output.ts"]) hash.update(name).update(readFileSync(join(sourceDir, name)));
   return hash.digest("hex");
 }
 
