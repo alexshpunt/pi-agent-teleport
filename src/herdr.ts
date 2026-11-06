@@ -33,14 +33,15 @@ export function guardedLaunch(argv: string[], receipt: string, env: Record<strin
 }
 
 /** Caller IDs and the CLI connection that owns them. */
-export type HerdrContext = { workspaceId: string; tabId: string; paneId: string; session: string; socketPath?: string; backend?: "app"; stateHome?: string; configHome?: string; runtimeDir?: string; appHome?: string; coreSocketPath?: string; coreScope?: string };
+export type HerdrContext = { workspaceId: string; tabId: string; paneId: string; session: string; socketPath?: string; backend?: "app"; stateHome?: string; configHome?: string; runtimeDir?: string; appHome?: string; coreSocketPath?: string };
 /** A workspace and its initial shell, recorded with the owning connection. */
 export type HerdrLocation = HerdrContext;
 
 /** Enable Herdr only inside a fully identified managed pane. */
 export function getHerdrContext(env: NodeJS.ProcessEnv = process.env): HerdrContext | undefined {
   if (env.HC_TERMINAL_ID?.trim()) {
-    const context: HerdrContext = { backend: "app", paneId: env.HC_TERMINAL_ID, workspaceId: "", tabId: "", session: env.HC_SESSION || "default", stateHome: env.XDG_STATE_HOME, configHome: env.XDG_CONFIG_HOME, runtimeDir: env.XDG_RUNTIME_DIR, appHome: env.HERDR_APP_HOME, coreSocketPath: env.HC_TERMINAL_SOCKET, coreScope: env.HC_SCOPE };
+    if (env.HC_SOCKET && env.HC_TERMINAL_SOCKET && env.HC_SOCKET !== env.HC_TERMINAL_SOCKET) throw new Error("The current terminal belongs to a different core socket.");
+    const context: HerdrContext = { backend: "app", paneId: env.HC_TERMINAL_ID, workspaceId: "", tabId: "", session: env.HC_SESSION || "default", stateHome: env.XDG_STATE_HOME, configHome: env.XDG_CONFIG_HOME, runtimeDir: env.XDG_RUNTIME_DIR, appHome: env.HERDR_APP_HOME, coreSocketPath: env.HC_TERMINAL_SOCKET || env.HC_SOCKET };
     const terminal = runCore(context, ["get", context.paneId]);
     if (terminal.address !== context.paneId || terminal.state !== "live" || !terminal.labels?.["herdr.space"] || !terminal.labels?.["herdr.tab"]) throw new Error("This core terminal has no verified Herdr App space and tab.");
     return { ...context, workspaceId: terminal.labels["herdr.space"], tabId: terminal.labels["herdr.tab"] };
@@ -52,7 +53,7 @@ export function getHerdrContext(env: NodeJS.ProcessEnv = process.env): HerdrCont
 /** Pin every core call to the connection captured with its handle. */
 export function coreEnvironment(context: HerdrContext): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, HC_SESSION: context.session, HC_TERMINAL_ID: context.paneId };
-  for (const [name, value] of Object.entries({ XDG_STATE_HOME: context.stateHome, XDG_CONFIG_HOME: context.configHome, XDG_RUNTIME_DIR: context.runtimeDir, HERDR_APP_HOME: context.appHome, HC_TERMINAL_SOCKET: context.coreSocketPath, HC_SCOPE: context.coreScope })) {
+  for (const [name, value] of Object.entries({ XDG_STATE_HOME: context.stateHome, XDG_CONFIG_HOME: context.configHome, XDG_RUNTIME_DIR: context.runtimeDir, HERDR_APP_HOME: context.appHome, HC_SOCKET: context.coreSocketPath, HC_TERMINAL_SOCKET: context.coreSocketPath, HC_SCOPE: undefined })) {
     if (value === undefined) delete env[name]; else env[name] = value;
   }
   return env;
@@ -116,7 +117,7 @@ export function assertHerdrContext(context: HerdrContext): void {
 
 /** Compare connections before using a persisted Herdr handle. */
 export function sameHerdrConnection(a: HerdrContext, b: HerdrContext): boolean {
-  return a.backend === b.backend && a.socketPath === b.socketPath && a.session === b.session && a.stateHome === b.stateHome && a.configHome === b.configHome && a.runtimeDir === b.runtimeDir && a.appHome === b.appHome && a.coreSocketPath === b.coreSocketPath && a.coreScope === b.coreScope;
+  return a.backend === b.backend && a.socketPath === b.socketPath && a.session === b.session && a.stateHome === b.stateHome && a.configHome === b.configHome && a.runtimeDir === b.runtimeDir && a.appHome === b.appHome && a.coreSocketPath === b.coreSocketPath;
 }
 
 /** Read IDs from a creation/open response and verify its checkout path. */
