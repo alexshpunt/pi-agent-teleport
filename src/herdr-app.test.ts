@@ -7,6 +7,26 @@ beforeEach(() => vi.resetAllMocks());
 
 const app = { backend: "app" as const, paneId: "t7", workspaceId: "sp3", tabId: "tb4", session: "owned", stateHome: "/owned/state" };
 
+test("a saved terminal socket pins core routing and is not a process lifetime scope", () => {
+  vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ address: "t7", labels: { "herdr.space": "sp3", "herdr.tab": "tb4" }, state: "live" }));
+  vi.stubEnv("HC_SOCKET", "/foreign/core.sock");
+  vi.stubEnv("HC_SCOPE", "source-lifetime");
+  try {
+    const first = getHerdrContext({ HC_TERMINAL_ID: "t7", HC_TERMINAL_SOCKET: "/owned/core.sock", HC_SCOPE: "source-lifetime" })!;
+    const second = getHerdrContext({ HC_TERMINAL_ID: "t7", HC_TERMINAL_SOCKET: "/owned/core.sock", HC_SCOPE: "other-lifetime" })!;
+    const options = vi.mocked(execFileSync).mock.calls[0][2] as { env: NodeJS.ProcessEnv };
+    // Do not dump the inherited environment when an assertion fails.
+    expect(options.env.HC_SOCKET === "/owned/core.sock").toBe(true);
+    expect(options.env.HC_SCOPE === undefined).toBe(true);
+    expect(sameHerdrConnection(first, second)).toBe(true);
+  } finally { vi.unstubAllEnvs(); }
+});
+
+test("a terminal cannot identify a caller after an explicit switch to another core", () => {
+  expect(() => getHerdrContext({ HC_TERMINAL_ID: "t7", HC_TERMINAL_SOCKET: "/owned/core.sock", HC_SOCKET: "/foreign/core.sock" })).toThrow();
+  expect(vi.mocked(execFileSync).mock.calls.length).toBe(0);
+});
+
 test("core commands never fall through to the legacy server", () => {
   expect(() => runHerdr(app, ["unsupported"])).toThrow();
   expect(execFileSync).not.toHaveBeenCalledWith("herdr", expect.anything(), expect.anything());
