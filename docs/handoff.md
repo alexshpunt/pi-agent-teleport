@@ -103,9 +103,15 @@ session, including wrappers, and reads each process's current directory from the
 OS. The observer needs permission to read those processes' `/proc` entries; a
 separate user namespace can prevent this even with the same numeric UID.
 
-The adapter is under development. App source retirement, remote UI routing and
-non-Linux process observation are not yet implemented. The legacy integration
-above is unchanged.
+App source retirement runs in a detached worker with the saved connection and
+without the source terminal's sweep scope. It verifies the recorded PID, current
+directory and session argument, or confirms that the source exited and its shell
+is idle, before closing the terminal. The source transcript is removed only after
+process exit. Failed cleanup retains it and records the worker outcome under the
+session's `cleanup` directory.
+
+The adapter is under development. Remote UI routing and non-Linux process
+observation are not yet implemented. The legacy integration above is unchanged.
 
 ## Remote activation and return
 

@@ -10,7 +10,7 @@ import { ownsExecution, registerTeleportOutput, type TeleportExecution, type Tel
 import { createManagedWorktree, prepareHerdrDestination, preserveHerdrSourceWorkspace, readState, reconcileState, removeManagedWorktree, writeState, type Resource } from "./core.ts";
 import { assertHerdrContext, getHerdrContext, guardedLaunch, powershellCommand, powershellQuote, runHerdr, type HerdrContext } from "./herdr.ts";
 import { awaitHerdrArrival, preflightSession, writeReadiness } from "./readiness.ts";
-import { UnknownRemoteOutcome, agentDirectory, piCommand, confirmArrival, extensionFile, parseTarget, probeRemote, qualifyLocation, remoteMachine, requestController, runtimeFingerprint, shellQuote as quote, startRemoteMove, workerFile } from "./remote.ts";
+import { UnknownRemoteOutcome, agentDirectory, piCommand, confirmArrival, extensionFile, parseTarget, probeRemote, qualifyLocation, remoteMachine, requestController, runtimeFingerprint, shellQuote as quote, startAppSourceCleanup, startRemoteMove, workerFile } from "./remote.ts";
 
 function dataDir(sessionId: string): string { return join(process.env.PI_CODING_AGENT_DIR ?? join(process.env.HOME ?? homedir(), ".pi", "agent"), "teleport", sessionId); }
 function serialize(ctx: ExtensionCommandContext, target: string): { source: string; destination: string } {
@@ -47,8 +47,9 @@ export function formatRemovedWorktree(resource: Resource): string {
   return `Removed worktree ${qualifyLocation(resource.path, resource.machine)}\nBranch: ${resource.branch}`;
 }
 
-async function scheduleSourceCleanup(pi: ExtensionAPI, context: HerdrContext, cwd: string, sessionFile: string): Promise<void> {
+async function scheduleSourceCleanup(pi: ExtensionAPI, context: HerdrContext, cwd: string, sessionFile: string, stateDir: string): Promise<void> {
   preserveHerdrSourceWorkspace(context, cwd);
+  if (context.backend === "app") return startAppSourceCleanup({ context, cwd, sessionFile, sourcePid: process.pid }, stateDir);
   const cleanup = buildSourcePaneCleanup(context.paneId, process.pid, sessionFile);
   const result = process.platform === "win32"
     // Start-Process owns a separate hidden window, so closing the source pane cannot kill cleanup.
@@ -103,7 +104,7 @@ export default function teleport(pi: ExtensionAPI) {
   }
 
   async function retireSource(ctx: ExtensionCommandContext, source: string, context: HerdrContext) {
-    try { await scheduleSourceCleanup(pi, context, ctx.cwd, source); }
+    try { await scheduleSourceCleanup(pi, context, ctx.cwd, source, dir); }
     catch (error) { notify(ctx, `Destination is running. Could not close source pane ${context.paneId}: ${String(error)}`, "error"); }
     ctx.shutdown();
   }
@@ -212,7 +213,7 @@ export default function teleport(pi: ExtensionAPI) {
         throw error;
       }
       // A confirmed destination must never be rolled back if source cleanup fails.
-      try { await scheduleSourceCleanup(pi, context, sourceCwd, source); }
+      try { await scheduleSourceCleanup(pi, context, sourceCwd, source, dir); }
       catch (error) { notify(ctx, `Destination is running. Could not close source pane ${context.paneId}: ${String(error)}`, "error"); }
       ctx.shutdown();
       return;

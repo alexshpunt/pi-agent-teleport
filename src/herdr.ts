@@ -145,7 +145,8 @@ function coreProcessInfo(context: HerdrContext, paneId: string): any {
     return content.slice(content.lastIndexOf(")") + 2).trim().split(/\s+/);
   };
   const shell = stat(terminal.pid);
-  const group = terminal.foreground?.pid;
+  // Core's foreground record is sampled; /proc stat exposes the terminal's live tpgid.
+  const group = Number(shell[4]) !== 0 ? Number(shell[5]) : terminal.foreground?.pid;
   const processes: Array<{ pid: number; cwd: string; argv: string[] }> = [];
   if (Number.isSafeInteger(group) && group > 0) {
     for (const entry of readdirSync("/proc")) {
