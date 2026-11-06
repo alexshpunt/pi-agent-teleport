@@ -38,11 +38,11 @@ test("sending a launch command uses core input without forcing a blocked termina
   expect(execFileSync).toHaveBeenCalledWith("hc", ["send", "t8", "echo 'hello'"], expect.objectContaining({ env: expect.objectContaining({ HC_SESSION: "owned" }) }));
 });
 
-test("closing a core terminal disables recovery before killing and removing it", () => {
-  vi.mocked(execFileSync).mockReturnValue("{}");
+test("closing an App terminal removes only its pane before killing and removing the core record", () => {
+  vi.mocked(execFileSync).mockReturnValueOnce(JSON.stringify({ pending: true, terminal: "t8" })).mockReturnValueOnce(JSON.stringify({ spaces: [] })).mockReturnValue("{}");
   runHerdr(app, ["pane", "close", "t8"]);
   expect(vi.mocked(execFileSync).mock.calls.map(([command, args]) => [command, args])).toEqual([
-    ["hc", ["keep", "t8", "--off"]], ["hc", ["kill", "t8"]], ["hc", ["rm", "t8"]],
+    ["herdr-app", ["do", "terminal.park", JSON.stringify({ terminal: "t8" })]], ["herdr-app", ["ls"]], ["hc", ["kill", "t8"]], ["hc", ["rm", "t8"]],
   ]);
 });
 

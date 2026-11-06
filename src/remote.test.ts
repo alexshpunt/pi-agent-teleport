@@ -2,7 +2,13 @@ import { describe, expect, test, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, Socket } from "node:net";
 import { dirname, join, resolve } from "node:path";
-import { confirmArrival, hasSessionProcess, parseTarget, qualifyLocation, relocateSession, requestController, UnknownRemoteOutcome, validateReady, waitForReceipt } from "./remote.ts";
+import { independentProcessEnvironment, confirmArrival, hasSessionProcess, parseTarget, qualifyLocation, relocateSession, requestController, UnknownRemoteOutcome, validateReady, waitForReceipt } from "./remote.ts";
+
+test("detached controllers retain routing but cannot inherit their source terminal's identity or sweep scope", () => {
+  const input = { HC_SCOPE: "source-lifetime", HC_TERMINAL_ID: "t7", HC_TERMINAL_SOCKET: "/owned/core.sock", HC_SOCKET: "/owned/core.sock", HC_SESSION: "owned", HERDR_ENV: "1", HERDR_PANE_ID: "p7", HERDR_TAB_ID: "tb7", HERDR_WORKSPACE_ID: "sp7", HERDR_SOCKET_PATH: "/legacy.sock", HOME: "/home/test", KEEP: "value" };
+  expect(independentProcessEnvironment(input)).toEqual({ HC_SOCKET: "/owned/core.sock", HC_SESSION: "owned", HERDR_SOCKET_PATH: "/legacy.sock", HOME: "/home/test", KEEP: "value" });
+  expect(input.HC_SCOPE).toBe("source-lifetime");
+});
 
 async function withSocket(handler: (socket: Socket) => void, run: (socket: string) => Promise<void>) {
   mkdirSync(resolve(".tmp"), { recursive: true });

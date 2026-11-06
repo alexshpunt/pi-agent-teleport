@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { shellQuote } from "./remote.ts";
+import { parkAppTerminal, runAppOperation } from "./app.ts";
 
 /** Encode a script so the receiving Windows shell never parses paths or handoff JSON. */
 export function powershellCommand(script: string): string {
@@ -29,11 +30,14 @@ export function guardedLaunch(argv: string[], receipt: string, env: Record<strin
   }
   const command = [...Object.entries(env).map(([name, value]) => `${name}=${shellQuote(value)}`), ...argv.map(shellQuote)].join(" ");
   const script = `${command}; status=$?; if [ -d ${shellQuote(dirname(receipt))} ]; then printf '{"ok":false,"error":"Destination Pi exited (status %s)."}\\n' "$status" > ${shellQuote(temporary)} && mv ${shellQuote(temporary)} ${shellQuote(receipt)}; fi`;
-  return `sh -c ${shellQuote(script)}`;
+  // The receiving login shell may be fish: nested POSIX quote escapes differ.
+  // Octal passes only inert ASCII through it; POSIX sh decodes its own script.
+  const encoded = [...Buffer.from(script)].map((byte) => `\\0${byte.toString(8).padStart(3, "0")}`).join("");
+  return `sh -c 'eval "$(printf %b "${encoded}")"'`;
 }
 
 /** Caller IDs and the CLI connection that owns them. */
-export type HerdrContext = { workspaceId: string; tabId: string; paneId: string; session: string; socketPath?: string; backend?: "app"; stateHome?: string; configHome?: string; runtimeDir?: string; appHome?: string; coreSocketPath?: string };
+export type HerdrContext = { workspaceId: string; tabId: string; paneId: string; session: string; socketPath?: string; backend?: "app"; stateHome?: string; configHome?: string; runtimeDir?: string; appHome?: string; appCli?: string; coreSocketPath?: string };
 /** A workspace and its initial shell, recorded with the owning connection. */
 export type HerdrLocation = HerdrContext;
 
@@ -41,7 +45,7 @@ export type HerdrLocation = HerdrContext;
 export function getHerdrContext(env: NodeJS.ProcessEnv = process.env): HerdrContext | undefined {
   if (env.HC_TERMINAL_ID?.trim()) {
     if (env.HC_SOCKET && env.HC_TERMINAL_SOCKET && env.HC_SOCKET !== env.HC_TERMINAL_SOCKET) throw new Error("The current terminal belongs to a different core socket.");
-    const context: HerdrContext = { backend: "app", paneId: env.HC_TERMINAL_ID, workspaceId: "", tabId: "", session: env.HC_SESSION || "default", stateHome: env.XDG_STATE_HOME, configHome: env.XDG_CONFIG_HOME, runtimeDir: env.XDG_RUNTIME_DIR, appHome: env.HERDR_APP_HOME, coreSocketPath: env.HC_TERMINAL_SOCKET || env.HC_SOCKET };
+    const context: HerdrContext = { backend: "app", paneId: env.HC_TERMINAL_ID, workspaceId: "", tabId: "", session: env.HC_SESSION || "default", stateHome: env.XDG_STATE_HOME, configHome: env.XDG_CONFIG_HOME, runtimeDir: env.XDG_RUNTIME_DIR, appHome: env.HERDR_APP_HOME, appCli: env.PI_HERDR_APP_CLI, coreSocketPath: env.HC_TERMINAL_SOCKET || env.HC_SOCKET };
     const terminal = runCore(context, ["get", context.paneId]);
     if (terminal.address !== context.paneId || terminal.state !== "live" || !terminal.labels?.["herdr.space"] || !terminal.labels?.["herdr.tab"]) throw new Error("This core terminal has no verified Herdr App space and tab.");
     return { ...context, workspaceId: terminal.labels["herdr.space"], tabId: terminal.labels["herdr.tab"] };
@@ -82,12 +86,13 @@ export function runHerdr(context: HerdrContext, args: string[]): any {
       return { type: "ok" };
     }
     if (args[0] === "pane" && args[1] === "close" && args.length === 3) {
-      runCore(context, ["keep", args[2], "--off"]);
+      parkAppTerminal(context, args[2]);
       runCore(context, ["kill", args[2]]);
       runCore(context, ["rm", args[2]]);
       return { type: "ok" };
     }
-    throw new Error(`Herdr App operation is not implemented: ${args.slice(0, 2).join(" ")}.`);
+    if (args[0] === "pane" && args[1] === "process-info" && args[2] === "--pane" && args.length === 4) return { process_info: coreProcessInfo(context, args[3]) };
+    return runAppOperation(context, args);
   }
   const env = herdrEnvironment(context);
   try {
@@ -117,7 +122,7 @@ export function assertHerdrContext(context: HerdrContext): void {
 
 /** Compare connections before using a persisted Herdr handle. */
 export function sameHerdrConnection(a: HerdrContext, b: HerdrContext): boolean {
-  return a.backend === b.backend && a.socketPath === b.socketPath && a.session === b.session && a.stateHome === b.stateHome && a.configHome === b.configHome && a.runtimeDir === b.runtimeDir && a.appHome === b.appHome && a.coreSocketPath === b.coreSocketPath;
+  return a.backend === b.backend && a.socketPath === b.socketPath && a.session === b.session && a.stateHome === b.stateHome && a.configHome === b.configHome && a.runtimeDir === b.runtimeDir && a.appHome === b.appHome && a.appCli === b.appCli && a.coreSocketPath === b.coreSocketPath;
 }
 
 /** Read IDs from a creation/open response and verify its checkout path. */
@@ -130,6 +135,34 @@ export function herdrLocation(context: HerdrContext, result: any, path?: string)
   return { ...context, workspaceId, tabId, paneId };
 }
 
+/** Observe the whole foreground group, not only core's group leader (often a launch wrapper). */
+function coreProcessInfo(context: HerdrContext, paneId: string): any {
+  const terminal = runCore(context, ["get", paneId]);
+  if (terminal.address !== paneId || terminal.state !== "live" || !Number.isSafeInteger(terminal.pid)) throw new Error("The addressed core terminal is not live.");
+  if (process.platform !== "linux") throw new Error("Native core process observation is not implemented on this platform.");
+  const stat = (pid: number) => {
+    const content = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return content.slice(content.lastIndexOf(")") + 2).trim().split(/\s+/);
+  };
+  const shell = stat(terminal.pid);
+  const group = terminal.foreground?.pid;
+  const processes: Array<{ pid: number; cwd: string; argv: string[] }> = [];
+  if (Number.isSafeInteger(group) && group > 0) {
+    for (const entry of readdirSync("/proc")) {
+      if (!/^\d+$/.test(entry)) continue;
+      const pid = Number(entry);
+      try {
+        const before = stat(pid);
+        if (Number(before[2]) !== group || before[3] !== shell[3]) continue;
+        const cwd = readlinkSync(`/proc/${pid}/cwd`);
+        const argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean);
+        const after = stat(pid);
+        if (after[19] === before[19] && after[2] === before[2] && after[3] === before[3]) processes.push({ pid, cwd, argv });
+      } catch { /* A process can exit while /proc is being read. */ }
+    }
+  }
+  return { shell_pid: terminal.pid, foreground_process_group_id: group, foreground_processes: processes };
+}
 /** True only when the shell, rather than a command or agent, owns the foreground. */
 export function isHerdrShell(context: HerdrContext, paneId: string): boolean {
   return shellOwnsForeground(runHerdr(context, ["pane", "process-info", "--pane", paneId]).process_info);

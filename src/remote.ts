@@ -54,7 +54,7 @@ export function agentDirectory(): string { return process.env.PI_CODING_AGENT_DI
 /** Fingerprint executable Teleport files, not Pi or unrelated extensions. */
 export function runtimeFingerprint(): string {
   const hash = createHash("sha256");
-  for (const name of ["index.ts", "core.ts", "herdr.ts", "readiness.ts", "remote.ts", "bridge.ts", "output.ts"]) hash.update(name).update(readFileSync(join(sourceDir, name)));
+  for (const name of ["index.ts", "core.ts", "herdr.ts", "app.ts", "readiness.ts", "remote.ts", "bridge.ts", "output.ts"]) hash.update(name).update(readFileSync(join(sourceDir, name)));
   return hash.digest("hex");
 }
 
@@ -164,6 +164,13 @@ export function remoteMachine(host: string): { machine: string; remoteSession: s
   return { machine: matches[0].id, remoteSession: matches[0].session };
 }
 
+/** Detachment does not escape core's terminal sweep token. Drop origin identity too. */
+export function independentProcessEnvironment(input: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = { ...input };
+  for (const name of ["HC_SCOPE", "HC_TERMINAL_ID", "HC_TERMINAL_SOCKET", "HERDR_ENV", "HERDR_WORKSPACE_ID", "HERDR_TAB_ID", "HERDR_PANE_ID"]) delete env[name];
+  return env;
+}
+
 /** Start a narrow detached controller that survives retirement of the source Pi. */
 export async function startRemoteMove(move: RemoteMove): Promise<any> {
   const dir = join(move.stateDir, "bridges", move.id);
@@ -173,7 +180,7 @@ export async function startRemoteMove(move: RemoteMove): Promise<any> {
   writeFileSync(config, JSON.stringify(move), { mode: 0o600, flag: "wx" });
   const log = openSync(join(dir, "controller.log"), "ax", 0o600);
   try {
-    const worker = spawn(process.execPath, ["--experimental-strip-types", workerFile, "controller", config], { cwd: move.sourceCwd, detached: true, stdio: ["ignore", log, log] });
+    const worker = spawn(process.execPath, ["--experimental-strip-types", workerFile, "controller", config], { cwd: move.sourceCwd, env: independentProcessEnvironment(), detached: true, stdio: ["ignore", log, log] });
     worker.once("error", (error) => writeFileSync(join(dir, "result.json"), JSON.stringify({ ok: false, error: `Could not start the Teleport controller: ${error.message}` }), { mode: 0o600, flag: "wx" }));
     worker.unref();
   } finally { closeSync(log); }
