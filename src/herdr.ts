@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { shellQuote } from "./remote.ts";
 import { parkAppTerminal, runAppOperation } from "./app.ts";
 
@@ -154,6 +155,15 @@ export function herdrLocation(context: HerdrContext, result: any, path?: string)
 function coreProcessInfo(context: HerdrContext, paneId: string): any {
   const terminal = runCore(context, ["get", paneId]);
   if (terminal.address !== paneId || terminal.state !== "live" || !Number.isSafeInteger(terminal.pid)) throw new Error("The addressed core terminal is not live.");
+  if (process.platform === "win32") {
+    const info = JSON.parse(execFileSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+      fileURLToPath(new URL("./process-info.ps1", import.meta.url)), String(terminal.pid)], { encoding: "utf8", windowsHide: true, timeout: 15_000, maxBuffer: 1024 * 1024 }));
+    if (info?.shell_pid !== terminal.pid || typeof info.shell_owns_foreground !== "boolean" || !Array.isArray(info.foreground_processes) ||
+        (info.shell_owns_foreground && (info.foreground_processes.length !== 1 || info.foreground_processes[0]?.pid !== terminal.pid)) ||
+        !info.foreground_processes.every((item: any) => Number.isSafeInteger(item.pid) && item.pid > 0 && typeof item.cwd === "string" && item.cwd.length > 0 &&
+          Array.isArray(item.argv) && item.argv.length > 0 && item.argv.every((arg: unknown) => typeof arg === "string"))) throw new Error("Invalid native Windows process observation.");
+    return info;
+  }
   if (process.platform !== "linux") throw new Error("Native core process observation is not implemented on this platform.");
   const stat = (pid: number) => {
     const content = readFileSync(`/proc/${pid}/stat`, "utf8");
@@ -185,8 +195,8 @@ export function isHerdrShell(context: HerdrContext, paneId: string): boolean {
 }
 
 /** Interpret a `pane process-info` result: the shell is back in the foreground. */
-export function shellOwnsForeground(info: { shell_pid?: number; foreground_process_group_id?: number } | undefined): boolean {
-  return !!info?.shell_pid && info.foreground_process_group_id === info.shell_pid;
+export function shellOwnsForeground(info: { shell_pid?: number; shell_owns_foreground?: boolean; foreground_process_group_id?: number } | undefined): boolean {
+  return !!info?.shell_pid && (typeof info.shell_owns_foreground === "boolean" ? info.shell_owns_foreground : info.foreground_process_group_id === info.shell_pid);
 }
 
 /** Append the destination's own terminal or process output to a failure. */
