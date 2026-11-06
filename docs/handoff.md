@@ -85,6 +85,28 @@ do not get replacement shells when their last pane leaves.
 Remote commands always select the destination's saved Herdr machine. Pane IDs are
 server-scoped; inherited local IDs must not identify a remote pane.
 
+### Herdr App adapter
+
+The App adapter resolves `HC_TERMINAL_ID` through the owning `hc` connection and
+verifies its space/tab labels. It uses public App commands for names and layout;
+Git manages worktrees. Creation first requests `focus:false`. Only the running
+window's pre-execution rejection of that unsupported argument permits retrying
+with App's default focus behavior. A timeout or lost reply is never replayed.
+
+Worktree ownership is saved before requesting an App space. An unconfirmed UI
+result retains that ownership for recovery. Removal requires the recorded sole
+idle terminal; it parks that terminal and waits for the UI acknowledgment before
+ending it. Other terminals and mod panes prevent checkout removal.
+
+Linux process observation checks the complete foreground group in the shell's
+session, including wrappers, and reads each process's current directory from the
+OS. The observer needs permission to read those processes' `/proc` entries; a
+separate user namespace can prevent this even with the same numeric UID.
+
+The adapter is under development. App source retirement, remote UI routing and
+non-Linux process observation are not yet implemented. The legacy integration
+above is unchanged.
+
 ## Remote activation and return
 
 Remote preflight runs the destination's configured `pi` from the target directory.
