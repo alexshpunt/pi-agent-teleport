@@ -33,16 +33,38 @@ export function guardedLaunch(argv: string[], receipt: string, env: Record<strin
 }
 
 /** Caller IDs and the CLI connection that owns them. */
-export type HerdrContext = { workspaceId: string; tabId: string; paneId: string; session: string; socketPath?: string };
+export type HerdrContext = { workspaceId: string; tabId: string; paneId: string; session: string; socketPath?: string; backend?: "app"; stateHome?: string; configHome?: string; runtimeDir?: string; appHome?: string; coreSocketPath?: string; coreScope?: string };
 /** A workspace and its initial shell, recorded with the owning connection. */
 export type HerdrLocation = HerdrContext;
 
 /** Enable Herdr only inside a fully identified managed pane. */
 export function getHerdrContext(env: NodeJS.ProcessEnv = process.env): HerdrContext | undefined {
+  if (env.HC_TERMINAL_ID?.trim()) {
+    const context: HerdrContext = { backend: "app", paneId: env.HC_TERMINAL_ID, workspaceId: "", tabId: "", session: env.HC_SESSION || "default", stateHome: env.XDG_STATE_HOME, configHome: env.XDG_CONFIG_HOME, runtimeDir: env.XDG_RUNTIME_DIR, appHome: env.HERDR_APP_HOME, coreSocketPath: env.HC_TERMINAL_SOCKET, coreScope: env.HC_SCOPE };
+    const terminal = runCore(context, ["get", context.paneId]);
+    if (terminal.address !== context.paneId || terminal.state !== "live" || !terminal.labels?.["herdr.space"] || !terminal.labels?.["herdr.tab"]) throw new Error("This core terminal has no verified Herdr App space and tab.");
+    return { ...context, workspaceId: terminal.labels["herdr.space"], tabId: terminal.labels["herdr.tab"] };
+  }
   if (env.HERDR_ENV !== "1" || !env.HERDR_WORKSPACE_ID?.trim() || !env.HERDR_TAB_ID?.trim() || !env.HERDR_PANE_ID?.trim()) return;
   return { workspaceId: env.HERDR_WORKSPACE_ID, tabId: env.HERDR_TAB_ID, paneId: env.HERDR_PANE_ID, session: env.HERDR_SESSION || "default", ...(env.HERDR_SOCKET_PATH ? { socketPath: env.HERDR_SOCKET_PATH } : {}) };
 }
 
+/** Pin every core call to the connection captured with its handle. */
+export function coreEnvironment(context: HerdrContext): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, HC_SESSION: context.session, HC_TERMINAL_ID: context.paneId };
+  for (const [name, value] of Object.entries({ XDG_STATE_HOME: context.stateHome, XDG_CONFIG_HOME: context.configHome, XDG_RUNTIME_DIR: context.runtimeDir, HERDR_APP_HOME: context.appHome, HC_TERMINAL_SOCKET: context.coreSocketPath, HC_SCOPE: context.coreScope })) {
+    if (value === undefined) delete env[name]; else env[name] = value;
+  }
+  return env;
+}
+
+/** Run a public hc query. Its JSON is the result itself, without Herdr's envelope. */
+export function runCore(context: HerdrContext, args: string[]): any {
+  return JSON.parse(runCoreText(context, args));
+}
+function runCoreText(context: HerdrContext, args: string[]): string {
+  return execFileSync("hc", args, { encoding: "utf8", env: coreEnvironment(context), timeout: 15_000, stdio: ["ignore", "pipe", "pipe"] });
+}
 /** Address the caller's connection, never the UI-focused session. */
 function herdrEnvironment(context: HerdrContext): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, HERDR_ENV: "1", HERDR_WORKSPACE_ID: context.workspaceId, HERDR_TAB_ID: context.tabId, HERDR_PANE_ID: context.paneId, HERDR_SESSION: context.session };
@@ -53,6 +75,19 @@ function herdrEnvironment(context: HerdrContext): NodeJS.ProcessEnv {
 
 /** Run the public CLI against the caller's connection, never the UI-focused session. */
 export function runHerdr(context: HerdrContext, args: string[]): any {
+  if (context.backend === "app") {
+    if (args[0] === "pane" && args[1] === "run" && args.length === 4) {
+      runCore(context, ["send", args[2], args[3]]);
+      return { type: "ok" };
+    }
+    if (args[0] === "pane" && args[1] === "close" && args.length === 3) {
+      runCore(context, ["keep", args[2], "--off"]);
+      runCore(context, ["kill", args[2]]);
+      runCore(context, ["rm", args[2]]);
+      return { type: "ok" };
+    }
+    throw new Error(`Herdr App operation is not implemented: ${args.slice(0, 2).join(" ")}.`);
+  }
   const env = herdrEnvironment(context);
   try {
     const output = execFileSync("herdr", args, { encoding: "utf8", env, timeout: 15_000, stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -70,13 +105,18 @@ export function runHerdr(context: HerdrContext, args: string[]): any {
 
 /** Refuse stale or forged caller IDs before changing Herdr state. */
 export function assertHerdrContext(context: HerdrContext): void {
+  if (context.backend === "app") {
+    const terminal = runCore(context, ["get", context.paneId]);
+    if (terminal.address !== context.paneId || terminal.state !== "live" || terminal.labels?.["herdr.space"] !== context.workspaceId || terminal.labels?.["herdr.tab"] !== context.tabId) throw new Error("Herdr App caller IDs no longer match the current terminal.");
+    return;
+  }
   const pane = runHerdr(context, ["pane", "current", "--current"]).pane;
   if (pane?.pane_id !== context.paneId || pane?.tab_id !== context.tabId || pane?.workspace_id !== context.workspaceId) throw new Error("Herdr caller IDs no longer match the current pane.");
 }
 
 /** Compare connections before using a persisted Herdr handle. */
 export function sameHerdrConnection(a: HerdrContext, b: HerdrContext): boolean {
-  return a.socketPath === b.socketPath && a.session === b.session;
+  return a.backend === b.backend && a.socketPath === b.socketPath && a.session === b.session && a.stateHome === b.stateHome && a.configHome === b.configHome && a.runtimeDir === b.runtimeDir && a.appHome === b.appHome && a.coreSocketPath === b.coreSocketPath && a.coreScope === b.coreScope;
 }
 
 /** Read IDs from a creation/open response and verify its checkout path. */
@@ -107,6 +147,10 @@ export function withOutput(message: string, output: string | undefined): string 
 /** Read a pane's recent terminal text, or undefined when Herdr cannot provide it. Use `machine` for a saved remote Herdr machine. */
 export function readHerdrPane(context: HerdrContext, paneId: string, machine?: string): string | undefined {
   try {
+    if (context.backend === "app") {
+      if (machine) throw new Error("Read remote core output through its owning endpoint.");
+      return runCoreText(context, ["read", paneId, "--lines", "80"]).trim() || undefined;
+    }
     const args = [...(machine ? ["--machine", machine] : []), "pane", "read", paneId, "--source", "recent", "--lines", "80"];
     const output = execFileSync("herdr", args, { encoding: "utf8", env: machine ? process.env : herdrEnvironment(context), timeout: 15_000, stdio: ["ignore", "pipe", "pipe"] });
     const lines = output.split("\n").map((line) => line.trimEnd());
