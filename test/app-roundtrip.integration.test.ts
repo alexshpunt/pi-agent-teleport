@@ -133,6 +133,16 @@ test.runIf(process.env.PI_TEST_APP_ROUNDTRIP === "1")("a native Pi session visit
     expect(entries.filter((entry) => entry.customType === "pi-agent-teleport-continuation")).toHaveLength(2);
     expect(entries.filter((entry) => entry.message?.role === "user").some((entry) => entry.message.content.some((part: any) => part.text === prompt))).toBe(true);
     expect(entries.filter((entry) => entry.message?.role === "assistant" && entry.message.content.some((part: any) => part.type === "text"))).toEqual([expect.objectContaining({ message: expect.objectContaining({ content: [{ type: "text", text: marker }] }) })]);
+    const receipts = entries.filter((entry) => entry.message?.role === "toolResult" && entry.message.toolName === "teleport").map((entry) => entry.message);
+    expect(receipts).toHaveLength(2);
+    expect(receipts.map((receipt) => receipt.details.action)).toEqual(["jump", "back"]);
+    for (const receipt of receipts) {
+      expect(receipt.isError).toBe(false);
+      expect(receipt.details.execution).toMatchObject({ sessionId: started.sessionId, toolCallId: receipt.toolCallId });
+      expect(receipt.content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "text", text: expect.any(String) })]));
+      expect(receipt.content.some((part: any) => part.type === "text" && part.text.trim())).toBe(true);
+    }
+    console.log(JSON.stringify({ agentReceipts: receipts }));
     const nativeReturned = runHerdr(returned.context, ["pane", "process-info", "--pane", returned.context.paneId]).process_info;
     expect(nativeReturned.foreground_processes).toEqual(expect.arrayContaining([expect.objectContaining({ pid: returned.pid, cwd: sourceCwd })]));
     await until(() => ssh(remotePreamble + `
