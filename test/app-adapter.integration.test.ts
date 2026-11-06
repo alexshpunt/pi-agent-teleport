@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlink
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
+import { retireAppSource } from "../src/bridge.ts";
+import { startAppSourceCleanup } from "../src/remote.ts";
 import { runApp, appSpaces } from "../src/app.ts";
 import { createManagedWorktree, prepareHerdrDestination, preserveHerdrSourceWorkspace, readState, removeManagedWorktree } from "../src/core.ts";
 import { coreEnvironment, getHerdrContext, guardedLaunch, herdrLocation, isHerdrShell, readHerdrPane, runHerdr, type HerdrContext } from "../src/herdr.ts";
@@ -33,7 +35,15 @@ test.runIf(process.env.PI_TEST_HERDR_APP === "1")("the real App adapter creates,
     await until(() => isHerdrShell(source, source.paneId) ? true : undefined);
     const resolved = getHerdrContext({ ...process.env, HC_TERMINAL_ID: source.paneId });
     expect(resolved).toMatchObject({ backend: "app", workspaceId: source.workspaceId, tabId: source.tabId, paneId: source.paneId });
-    runApp(source, ["do", "agent.focus", JSON.stringify({ terminal: source.paneId })]);
+    runApp(source, ["do", "overlay.close", "{}"]);
+    // Creation returns before the window receives core's live-terminal event.
+    let focusError: unknown;
+    try {
+      await until(() => {
+        try { runApp(source, ["do", "agent.focus", JSON.stringify({ terminal: source.paneId })]); return true; }
+        catch (error) { focusError = error; return undefined; }
+      });
+    } catch { throw focusError; }
     const selection = () => { const status = runApp(source, ["status"]); return [status.space, status.tab, status.focused_pane]; };
     const before = selection();
     const stateDir = join(directory, "state");
@@ -84,7 +94,24 @@ test.runIf(process.env.PI_TEST_HERDR_APP === "1")("the real App adapter creates,
     expect(readState(stateDir).resources[resource.id]).toBeUndefined();
     expect(appSpaces(source).some((space) => space.id === destination.location.workspaceId)).toBe(false);
     preserveHerdrSourceWorkspace(source, repo);
-    runHerdr(source, ["pane", "close", source.paneId]);
+    const sourceSession = join(directory, "source-session.jsonl");
+    writeFileSync(sourceSession, "owned source transcript");
+    rmSync(ready);
+    runHerdr(source, ["pane", "run", source.paneId, guardedLaunch([process.execPath, "-e", program], exited)]);
+    programPid = await until(() => existsSync(ready) ? JSON.parse(readFileSync(ready, "utf8")).pid as number : undefined);
+    // A foreign occupant must survive a stale cleanup request, with its file intact.
+    await expect(retireAppSource({ context: source, sourcePid: process.pid, cwd: repo, sessionFile: sourceSession })).rejects.toThrow();
+    expect(existsSync(sourceSession)).toBe(true);
+    await startAppSourceCleanup({ context: source, sourcePid: programPid, cwd: repo, sessionFile: sourceSession }, stateDir);
+    try { await until(() => !existsSync(sourceSession) ? true : undefined); }
+    catch (error) {
+      const workers = readdirSync(join(stateDir, "cleanup")).map((id) => {
+        const dir = join(stateDir, "cleanup", id);
+        return { id, log: readFileSync(join(dir, "worker.log"), "utf8"), result: existsSync(join(dir, "result.json")) ? readFileSync(join(dir, "result.json"), "utf8") : undefined };
+      });
+      throw new Error(JSON.stringify({ error: String(error), workers }));
+    }
+    programPid = undefined;
     const remaining = appSpaces(source).find((space) => space.id === source.workspaceId)!;
     expect(remaining.tabs).toHaveLength(1);
     expect(remaining.tabs[0].terminals).toHaveLength(1);

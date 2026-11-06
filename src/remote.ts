@@ -171,6 +171,22 @@ export function independentProcessEnvironment(input: NodeJS.ProcessEnv = process
   return env;
 }
 
+/** Keep App cleanup outside the source terminal's lifetime and sweep scope. */
+export function startAppSourceCleanup(input: import("./bridge.ts").AppSourceCleanup, stateDir: string): Promise<void> {
+  const dir = join(stateDir, "cleanup", randomUUID());
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const config = join(dir, "source.json");
+  writeFileSync(config, JSON.stringify(input), { mode: 0o600, flag: "wx" });
+  const log = openSync(join(dir, "worker.log"), "ax", 0o600);
+  return new Promise((resolve, reject) => {
+    try {
+      const worker = spawn(process.execPath, ["--experimental-strip-types", workerFile, "cleanup-app", config], { cwd: input.cwd, env: independentProcessEnvironment(), detached: true, windowsHide: true, stdio: ["ignore", log, log] });
+      worker.once("error", reject);
+      worker.once("spawn", () => { worker.unref(); resolve(); });
+    } catch (error) { reject(error); }
+    finally { closeSync(log); }
+  });
+}
 /** Start a narrow detached controller that survives retirement of the source Pi. */
 export async function startRemoteMove(move: RemoteMove): Promise<any> {
   const dir = join(move.stateDir, "bridges", move.id);

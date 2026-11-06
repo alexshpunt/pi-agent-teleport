@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mergeMachineResources, prepareHerdrArrival, preserveHerdrSourceWorkspace, readState, writeState, type TeleportState } from "./core.ts";
-import { guardedLaunch, readHerdrPane, runHerdr, shellOwnsForeground, withOutput, type HerdrContext } from "./herdr.ts";
+import { assertHerdrContext, guardedLaunch, readHerdrPane, runHerdr, shellOwnsForeground, withOutput, type HerdrContext } from "./herdr.ts";
 import type { TeleportExecution } from "./output.ts";
 import { agentDirectory, piCommand, MAX_PACKET, hasSessionProcess, qualifyLocation, relocateSession, runtimeFingerprint, UnknownRemoteOutcome, shellQuote, sshOptions, validateReady, type ReadyIdentity, type RemoteMove, type ReturnRoute } from "./remote.ts";
 
@@ -128,6 +128,26 @@ export function abortArrival(prepared: Prepared): void {
   rmSync(prepared.dir, { recursive: true, force: true });
 }
 
+export type AppSourceCleanup = { context: HerdrContext; sourcePid: number; cwd: string; sessionFile: string };
+
+/** Close only the original App occupant, then remove its transcript after exit. */
+export async function retireAppSource(input: AppSourceCleanup): Promise<void> {
+  if (input.context.backend !== "app" || !Number.isSafeInteger(input.sourcePid) || input.sourcePid <= 0) throw new Error("Invalid App cleanup ownership.");
+  const gone = () => {
+    try { process.kill(input.sourcePid, 0); return false; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
+  };
+  assertHerdrContext(input.context);
+  const info = runHerdr(input.context, ["pane", "process-info", "--pane", input.context.paneId]).process_info;
+  if (!hasSessionProcess(info?.foreground_processes, input.sourcePid, input.cwd, input.sessionFile) && !(gone() && shellOwnsForeground(info))) throw new Error("The source pane no longer has its recorded occupant; its transcript is retained.");
+  runHerdr(input.context, ["pane", "close", input.context.paneId]);
+  const deadline = Date.now() + 5_000;
+  while (!gone()) {
+    if (Date.now() >= deadline) throw new Error("The source process has not exited; its transcript is retained.");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  rmSync(input.sessionFile, { force: true });
+}
 function endpoint(action: string, input: any): any {
   if (action === "reserve") {
     const dir = mkdtempSync(join(tmpdir(), "pi-teleport-"));
@@ -416,6 +436,15 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
       const result = endpoint(process.argv[3], JSON.parse(content));
       process.stdout.write(JSON.stringify({ ok: true, result }));
     } catch (error) { process.stdout.write(JSON.stringify({ ok: false, uncertain: error instanceof UnknownRemoteOutcome, error: error instanceof Error ? error.message : String(error) })); process.exitCode = 1; }
+  } else if (process.argv[2] === "cleanup-app") {
+    const config = process.argv[3];
+    const input = JSON.parse(readFileSync(config, "utf8")) as AppSourceCleanup;
+    setTimeout(() => {
+      retireAppSource(input).then(
+        () => save(join(dirname(config), "result.json"), { ok: true }),
+        (error) => { save(join(dirname(config), "result.json"), { ok: false, error: String(error) }); console.error(error); process.exitCode = 1; },
+      );
+    }, 250);
   } else if (process.argv[2] === "controller") {
     controller(process.argv[3]).catch((error) => { console.error(error); process.exitCode = 1; });
   }
