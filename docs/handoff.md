@@ -114,8 +114,41 @@ is idle, before closing the terminal. The source transcript is removed only afte
 process exit. Failed cleanup retains it and records the worker outcome under the
 session's `cleanup` directory.
 
-The adapter is under development. Remote UI routing and non-Linux process
-observation are not yet implemented. The legacy integration above is unchanged.
+Remote App creation uses the persistent direct SSH profile from `hc machine ls`.
+Its name qualifies UI handles; native core handles remain unqualified and bound to
+their captured connection. Lists and creation receipts cannot adopt another
+machine's handles. UI requests travel through the authenticated Teleport controller,
+which permits only the addressed machine's creation, naming, closure, parking and
+listing commands. SSH endpoint calls are asynchronous so staging can call back to
+the controller. The return channel stays available until remote App source cleanup
+acknowledges retirement.
+
+A Pi started manually in a remote App terminal has no inherited controller. Give it
+an explicit desktop SSH route: save a private JSON file on that remote machine and
+set `PI_TELEPORT_APP_CONTEXT` to its absolute path before starting Pi.
+
+```json
+{
+  "backend": "app",
+  "session": "default",
+  "appMachine": "worker",
+  "appSsh": { "target": "desktop-ssh", "session": "default" }
+}
+```
+
+The outer `session` is the remote terminal's core session. `appMachine` is this
+remote machine's profile name in the desktop's `hc machine ls`, not its SSH target
+or permanent host ID. `appSsh.target` is an existing trusted OpenSSH alias on the
+remote machine. The desktop needs Node and the public App CLI on its SSH login
+PATH. `appSsh.session` selects the desktop's core/App session; it defaults to
+`default`. For a custom desktop installation, `appSsh` also accepts `appCli`,
+`appHome`, `stateHome`, `configHome`, `runtimeDir` and `coreSocketPath`. These desktop
+settings are separate from the remote core's environment. SSH host-key checks stay
+enabled and the SSH agent is never forwarded. No public App endpoint is added.
+
+The adapter is under development. Two-machine route validation is pending, and
+non-Linux process observation is not yet implemented. The legacy integration above
+is unchanged.
 
 ## Remote activation and return
 

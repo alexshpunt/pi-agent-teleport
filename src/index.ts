@@ -8,7 +8,7 @@ import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import { ownsExecution, registerTeleportOutput, type TeleportExecution, type TeleportOutcome } from "./output.ts";
 import { createManagedWorktree, prepareHerdrDestination, preserveHerdrSourceWorkspace, readState, reconcileState, removeManagedWorktree, writeState, type Resource } from "./core.ts";
-import { assertHerdrContext, getHerdrContext, guardedLaunch, powershellCommand, powershellQuote, runHerdr, type HerdrContext } from "./herdr.ts";
+import { appConnection, assertHerdrContext, getHerdrContext, guardedLaunch, powershellCommand, powershellQuote, runHerdr, type HerdrContext } from "./herdr.ts";
 import { awaitHerdrArrival, preflightSession, writeReadiness } from "./readiness.ts";
 import { UnknownRemoteOutcome, agentDirectory, piCommand, confirmArrival, extensionFile, parseTarget, probeRemote, qualifyLocation, remoteMachine, requestController, runtimeFingerprint, shellQuote as quote, startAppSourceCleanup, startRemoteMove, workerFile } from "./remote.ts";
 
@@ -72,7 +72,7 @@ export default function teleport(pi: ExtensionAPI) {
   });
   pi.on("tool_execution_end", (event) => { executions.delete(event.toolCallId); });
   if (process.env.PI_TELEPORT_PROBE) {
-    process.stdout.write(`PI_TELEPORT_PROBE:${process.env.PI_TELEPORT_PROBE}:${JSON.stringify({ fingerprint: implementation, worker: workerFile, agentDir: agentDirectory(), version: VERSION })}\n`);
+    process.stdout.write(`PI_TELEPORT_PROBE:${process.env.PI_TELEPORT_PROBE}:${JSON.stringify({ fingerprint: implementation, worker: workerFile, agentDir: agentDirectory(), version: VERSION, command: piCommand(), core: appConnection() })}\n`);
   }
   let sessionId = "unknown";
   let dir = dataDir(sessionId);
@@ -114,11 +114,11 @@ export default function teleport(pi: ExtensionAPI) {
     if (!herdr) throw new Error("Remote Teleport requires Herdr on both machines. Local moves still work without Herdr.");
     assertHerdrContext(herdr);
     const { source, sessionText } = snapshot(ctx);
-    const profile = remoteMachine(host);
+    const profile = remoteMachine(host, herdr);
     const remote = probeRemote(host, path, implementation);
     const id = randomUUID();
     const state = readState(dir);
-    const move = { id, host, path, ...profile, sourceCwd: ctx.cwd, sourceSession: source, sourcePid: process.pid, sessionText, sessionId, execution, sessionName: ctx.sessionManager.getSessionName(), state, stateDir: dir, herdr, fingerprint: implementation, remoteWorker: remote.worker, remoteAgentDir: remote.agentDir, localVersion: VERSION, remoteVersion: remote.version };
+    const move = { id, host, path, ...profile, sourceCwd: ctx.cwd, sourceSession: source, sourcePid: process.pid, sessionText, sessionId, execution, sessionName: ctx.sessionManager.getSessionName(), state, stateDir: dir, herdr, fingerprint: implementation, remoteWorker: remote.worker, remoteAgentDir: remote.agentDir, localVersion: VERSION, remoteVersion: remote.version, localCommand: piCommand(), remoteCommand: remote.command, remoteCore: remote.core };
     state.pendingRemote = { id, receipt: join(dir, "bridges", id, "result.json") };
     writeState(dir, state);
     // Keep the captured source state independent from the in-flight marker.
@@ -192,7 +192,7 @@ export default function teleport(pi: ExtensionAPI) {
         prepared = prepareHerdrDestination(context, target, resource?.herdr, ctx.sessionManager.getSessionName());
         const location = prepared.location;
         const continuation = Buffer.from(JSON.stringify({ execution, from: qualifyLocation(sourceCwd, state.machine), to: qualifyLocation(target, state.machine), receipt }), "utf8").toString("base64url");
-        runHerdr(context, ["pane", "run", location.paneId, guardedLaunch([...(context.backend === "app" || process.platform === "win32" ? piCommand() : ["pi"]), "--approve", "--session", destination], receipt, { PI_CODING_AGENT_DIR: agentDirectory(), PI_TELEPORT_CONTINUATION: continuation })]);
+        runHerdr(context, ["pane", "run", location.paneId, guardedLaunch([...(context.backend === "app" || process.platform === "win32" ? piCommand() : ["pi"]), "--approve", "--session", destination], receipt, { PI_CODING_AGENT_DIR: agentDirectory(), PI_TELEPORT_CONTINUATION: continuation, PI_TELEPORT_APP_CONTEXT: process.env.PI_TELEPORT_APP_CONTEXT || "" })]);
         // The destination stays gated until this commit; the source retires only after its own readiness verdict.
         await awaitHerdrArrival(context, location.paneId, destination, receipt);
         state = readState(dir);
