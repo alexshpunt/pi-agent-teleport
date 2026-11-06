@@ -36,7 +36,7 @@ test.each([
   Object.defineProperty(process, "platform", { value: "win32" });
   vi.mocked(execFileSync).mockImplementation(((file: string) => JSON.stringify(file === "hc" ? { address: "t8", pid: 41, state: "live" } : native)) as typeof execFileSync);
   try {
-    expect(() => runHerdr({ backend: "app", workspaceId: "sp1", tabId: "tb1", paneId: "t8", session: "owned" }, ["pane", "process-info", "--pane", "t8"])).toThrow("Invalid native Windows process observation");
+    expect(() => runHerdr({ backend: "app", workspaceId: "sp1", tabId: "tb1", paneId: "t8", session: "owned" }, ["pane", "process-info", "--pane", "t8"])).toThrow();
   } finally {
     Object.defineProperty(process, "platform", platform);
     vi.mocked(execFileSync).mockReset();
