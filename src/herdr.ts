@@ -37,15 +37,30 @@ export function guardedLaunch(argv: string[], receipt: string, env: Record<strin
 }
 
 /** Caller IDs and the CLI connection that owns them. */
-export type HerdrContext = { workspaceId: string; tabId: string; paneId: string; session: string; socketPath?: string; backend?: "app"; stateHome?: string; configHome?: string; runtimeDir?: string; appHome?: string; appCli?: string; coreSocketPath?: string };
+export type HerdrContext = { workspaceId: string; tabId: string; paneId: string; session: string; socketPath?: string; backend?: "app"; stateHome?: string; configHome?: string; runtimeDir?: string; appHome?: string; appCli?: string; appMachine?: string; appRoute?: { socket: string; token: string; operationId: string }; appSsh?: { target: string; session?: string; stateHome?: string; configHome?: string; runtimeDir?: string; appHome?: string; appCli?: string; coreSocketPath?: string }; coreSocketPath?: string };
 /** A workspace and its initial shell, recorded with the owning connection. */
 export type HerdrLocation = HerdrContext;
+
+/** Capture native routing without inventing caller IDs, including during an SSH probe. */
+export function appConnection(session = process.env.HC_SESSION || "default", env: NodeJS.ProcessEnv = process.env): HerdrContext {
+  return { backend: "app", paneId: "", workspaceId: "", tabId: "", session, stateHome: env.XDG_STATE_HOME, configHome: env.XDG_CONFIG_HOME, runtimeDir: env.XDG_RUNTIME_DIR, appHome: env.HERDR_APP_HOME, appCli: env.PI_HERDR_APP_CLI, coreSocketPath: env.HC_TERMINAL_SOCKET || env.HC_SOCKET };
+}
 
 /** Enable Herdr only inside a fully identified managed pane. */
 export function getHerdrContext(env: NodeJS.ProcessEnv = process.env): HerdrContext | undefined {
   if (env.HC_TERMINAL_ID?.trim()) {
     if (env.HC_SOCKET && env.HC_TERMINAL_SOCKET && env.HC_SOCKET !== env.HC_TERMINAL_SOCKET) throw new Error("The current terminal belongs to a different core socket.");
-    const context: HerdrContext = { backend: "app", paneId: env.HC_TERMINAL_ID, workspaceId: "", tabId: "", session: env.HC_SESSION || "default", stateHome: env.XDG_STATE_HOME, configHome: env.XDG_CONFIG_HOME, runtimeDir: env.XDG_RUNTIME_DIR, appHome: env.HERDR_APP_HOME, appCli: env.PI_HERDR_APP_CLI, coreSocketPath: env.HC_TERMINAL_SOCKET || env.HC_SOCKET };
+    const context = { ...appConnection(env.HC_SESSION || "default", env), paneId: env.HC_TERMINAL_ID };
+    if (env.PI_TELEPORT_APP_CONTEXT) {
+      const saved = JSON.parse(readFileSync(env.PI_TELEPORT_APP_CONTEXT, "utf8")) as HerdrContext;
+      const controllerRoute = saved.appRoute && [saved.appRoute.socket, saved.appRoute.token, saved.appRoute.operationId].every((value) => typeof value === "string" && value.length > 0);
+      const sshRoute = typeof saved.appSsh?.target === "string" && /^(?:[A-Za-z0-9][A-Za-z0-9_.-]*@)?[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(saved.appSsh.target);
+      const routed = saved.appRoute ? controllerRoute && !saved.appSsh : sshRoute;
+      if (saved.backend !== "app" || saved.session !== context.session || !saved.appMachine || saved.appMachine.includes("/") || !routed) throw new Error("The saved App UI route does not match this core connection.");
+      context.appMachine = saved.appMachine;
+      context.appRoute = saved.appRoute;
+      context.appSsh = saved.appSsh;
+    }
     const terminal = runCore(context, ["get", context.paneId]);
     if (terminal.address !== context.paneId || terminal.state !== "live" || !terminal.labels?.["herdr.space"] || !terminal.labels?.["herdr.tab"]) throw new Error("This core terminal has no verified Herdr App space and tab.");
     return { ...context, workspaceId: terminal.labels["herdr.space"], tabId: terminal.labels["herdr.tab"] };
@@ -122,7 +137,7 @@ export function assertHerdrContext(context: HerdrContext): void {
 
 /** Compare connections before using a persisted Herdr handle. */
 export function sameHerdrConnection(a: HerdrContext, b: HerdrContext): boolean {
-  return a.backend === b.backend && a.socketPath === b.socketPath && a.session === b.session && a.stateHome === b.stateHome && a.configHome === b.configHome && a.runtimeDir === b.runtimeDir && a.appHome === b.appHome && a.appCli === b.appCli && a.coreSocketPath === b.coreSocketPath;
+  return a.backend === b.backend && a.socketPath === b.socketPath && a.session === b.session && a.stateHome === b.stateHome && a.configHome === b.configHome && a.runtimeDir === b.runtimeDir && a.appHome === b.appHome && a.appCli === b.appCli && a.appMachine === b.appMachine && a.appSsh?.target === b.appSsh?.target && a.appSsh?.session === b.appSsh?.session && a.appSsh?.appHome === b.appSsh?.appHome && a.appSsh?.stateHome === b.appSsh?.stateHome && a.appSsh?.configHome === b.appSsh?.configHome && a.appSsh?.runtimeDir === b.appSsh?.runtimeDir && a.appSsh?.coreSocketPath === b.appSsh?.coreSocketPath && a.appSsh?.appCli === b.appSsh?.appCli && a.coreSocketPath === b.coreSocketPath;
 }
 
 /** Read IDs from a creation/open response and verify its checkout path. */

@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TeleportState } from "./core.ts";
-import type { HerdrContext } from "./herdr.ts";
+import { runCore, type HerdrContext } from "./herdr.ts";
 import type { TeleportExecution } from "./output.ts";
 
 const sourceDir = dirname(fileURLToPath(import.meta.url));
@@ -33,6 +33,7 @@ export type RemoteMove = {
   sessionId: string; sessionText: string; sessionName?: string; state: TeleportState; execution: TeleportExecution;
   sourceCwd: string; sourceSession: string; sourcePid: number; stateDir: string; herdr: HerdrContext;
   fingerprint: string; remoteWorker: string; remoteAgentDir: string; localVersion: string; remoteVersion: string;
+  localCommand?: string[]; remoteCommand?: string[]; remoteCore?: HerdrContext;
 };
 
 /** Resolve local paths or a trusted OpenSSH alias with an absolute remote path. */
@@ -145,7 +146,7 @@ export async function waitForReceipt(path: string): Promise<any> {
 export const sshOptions = ["-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ForwardAgent=no", "-o", "ConnectTimeout=10"];
 
 /** Probe the remote configured Pi runtime without starting a model or changing its installation. */
-export function probeRemote(host: string, path: string, expectedFingerprint: string): { fingerprint: string; worker: string; agentDir: string; version: string } {
+export function probeRemote(host: string, path: string, expectedFingerprint: string): { fingerprint: string; worker: string; agentDir: string; version: string; command: string[]; core: HerdrContext } {
   const nonce = randomUUID();
   const prefix = `PI_TELEPORT_PROBE:${nonce}:`;
   const output = execFileSync("ssh", [...sshOptions, host, `cd ${shellQuote(path)} && PI_TELEPORT_PROBE=${shellQuote(nonce)} pi --approve --help`], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
@@ -156,8 +157,15 @@ export function probeRemote(host: string, path: string, expectedFingerprint: str
   return probes[0];
 }
 
-/** Keep only a matching enabled native Herdr machine, never its focused pane. */
-export function remoteMachine(host: string): { machine: string; remoteSession: string } {
+/** Resolve one configured SSH profile without using UI focus. */
+export function remoteMachine(host: string, context?: HerdrContext): { machine: string; remoteSession: string } {
+  if (context?.backend === "app") {
+    const profiles = runCore(context, ["machine", "ls", "--json"]).machines;
+    if (!Array.isArray(profiles)) throw new Error("Core returned no machine profiles.");
+    const matches = profiles.filter((profile: any) => profile.target === host && !profile.via && !profile.temporary);
+    if (matches.length !== 1 || typeof matches[0].name !== "string" || !matches[0].name || matches[0].name.includes("/") || (matches[0].session != null && typeof matches[0].session !== "string")) throw new Error(`Configure one persistent direct SSH core machine for ${host} before teleporting.`);
+    return { machine: matches[0].name, remoteSession: matches[0].session || "default" };
+  }
   const profiles = JSON.parse(execFileSync("herdr", ["machine", "list", "--json"], { encoding: "utf8", timeout: 15_000 }));
   const matches = profiles.filter((profile: any) => profile.enabled && profile.target === host);
   if (matches.length !== 1) throw new Error(`Configure one enabled Herdr machine for SSH target ${host} before teleporting.`);
