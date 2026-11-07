@@ -40,6 +40,8 @@
     "src/index.ts",
     "src/core.ts",
     "src/herdr.ts",
+    "src/process-info.ps1",
+    "src/app.ts",
     "src/readiness.ts",
     "src/remote.ts",
     "src/bridge.ts",

@@ -94,7 +94,7 @@ export async function preflightSession(input: { target: string; sessionText: str
     const receipt = join(dir, "ready.json");
     const env: NodeJS.ProcessEnv = { ...process.env, PI_TELEPORT_PREFLIGHT: receipt };
     // The check must not register as an agent in the caller's terminal or join a handoff.
-    for (const name of Object.keys(env)) if (name.startsWith("HERDR_") || name === "PI_TELEPORT_CONTINUATION" || name === "PI_TELEPORT_HANDOFF") delete env[name];
+    for (const name of Object.keys(env)) if (name.startsWith("HERDR_") || name.startsWith("HC_") || name === "PI_TELEPORT_CONTINUATION" || name === "PI_TELEPORT_HANDOFF") delete env[name];
     const [command, ...prefix] = piCommand();
     // Relative CLI paths resolve against this process's launch directory, as in the current runtime.
     const child = spawn(command, [...prefix, ...preflightArguments(process.argv.slice(2)), "--mode", "rpc", "--session", session], { cwd: process.cwd(), env, stdio: ["pipe", "pipe", "pipe"] });

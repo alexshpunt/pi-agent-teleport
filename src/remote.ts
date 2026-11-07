@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TeleportState } from "./core.ts";
-import type { HerdrContext } from "./herdr.ts";
+import { runCore, type HerdrContext } from "./herdr.ts";
 import type { TeleportExecution } from "./output.ts";
 
 const sourceDir = dirname(fileURLToPath(import.meta.url));
@@ -33,6 +33,7 @@ export type RemoteMove = {
   sessionId: string; sessionText: string; sessionName?: string; state: TeleportState; execution: TeleportExecution;
   sourceCwd: string; sourceSession: string; sourcePid: number; stateDir: string; herdr: HerdrContext;
   fingerprint: string; remoteWorker: string; remoteAgentDir: string; localVersion: string; remoteVersion: string;
+  localCommand?: string[]; remoteCommand?: string[]; remoteCore?: HerdrContext;
 };
 
 /** Resolve local paths or a trusted OpenSSH alias with an absolute remote path. */
@@ -54,7 +55,7 @@ export function agentDirectory(): string { return process.env.PI_CODING_AGENT_DI
 /** Fingerprint executable Teleport files, not Pi or unrelated extensions. */
 export function runtimeFingerprint(): string {
   const hash = createHash("sha256");
-  for (const name of ["index.ts", "core.ts", "herdr.ts", "readiness.ts", "remote.ts", "bridge.ts", "output.ts"]) hash.update(name).update(readFileSync(join(sourceDir, name)));
+  for (const name of ["index.ts", "core.ts", "herdr.ts", "app.ts", "process-info.ps1", "readiness.ts", "remote.ts", "bridge.ts", "output.ts"]) hash.update(name).update(readFileSync(join(sourceDir, name)));
   return hash.digest("hex");
 }
 
@@ -145,7 +146,7 @@ export async function waitForReceipt(path: string): Promise<any> {
 export const sshOptions = ["-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ForwardAgent=no", "-o", "ConnectTimeout=10"];
 
 /** Probe the remote configured Pi runtime without starting a model or changing its installation. */
-export function probeRemote(host: string, path: string, expectedFingerprint: string): { fingerprint: string; worker: string; agentDir: string; version: string } {
+export function probeRemote(host: string, path: string, expectedFingerprint: string): { fingerprint: string; worker: string; agentDir: string; version: string; command: string[]; core: HerdrContext } {
   const nonce = randomUUID();
   const prefix = `PI_TELEPORT_PROBE:${nonce}:`;
   const output = execFileSync("ssh", [...sshOptions, host, `cd ${shellQuote(path)} && PI_TELEPORT_PROBE=${shellQuote(nonce)} pi --approve --help`], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
@@ -156,14 +157,44 @@ export function probeRemote(host: string, path: string, expectedFingerprint: str
   return probes[0];
 }
 
-/** Keep only a matching enabled native Herdr machine, never its focused pane. */
-export function remoteMachine(host: string): { machine: string; remoteSession: string } {
+/** Resolve one configured SSH profile without using UI focus. */
+export function remoteMachine(host: string, context?: HerdrContext): { machine: string; remoteSession: string } {
+  if (context?.backend === "app") {
+    const profiles = runCore(context, ["machine", "ls", "--json"]).machines;
+    if (!Array.isArray(profiles)) throw new Error("Core returned no machine profiles.");
+    const matches = profiles.filter((profile: any) => profile.target === host && !profile.via && !profile.temporary);
+    if (matches.length !== 1 || typeof matches[0].name !== "string" || !matches[0].name || matches[0].name.includes("/") || (matches[0].session != null && typeof matches[0].session !== "string")) throw new Error(`Configure one persistent direct SSH core machine for ${host} before teleporting.`);
+    return { machine: matches[0].name, remoteSession: matches[0].session || "default" };
+  }
   const profiles = JSON.parse(execFileSync("herdr", ["machine", "list", "--json"], { encoding: "utf8", timeout: 15_000 }));
   const matches = profiles.filter((profile: any) => profile.enabled && profile.target === host);
   if (matches.length !== 1) throw new Error(`Configure one enabled Herdr machine for SSH target ${host} before teleporting.`);
   return { machine: matches[0].id, remoteSession: matches[0].session };
 }
 
+/** Detachment does not escape core's terminal sweep token. Drop origin identity too. */
+export function independentProcessEnvironment(input: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = { ...input };
+  for (const name of ["HC_SCOPE", "HC_TERMINAL_ID", "HC_TERMINAL_SOCKET", "HERDR_ENV", "HERDR_WORKSPACE_ID", "HERDR_TAB_ID", "HERDR_PANE_ID"]) delete env[name];
+  return env;
+}
+
+/** Keep App cleanup outside the source terminal's lifetime and sweep scope. */
+export function startAppSourceCleanup(input: import("./bridge.ts").AppSourceCleanup, stateDir: string): Promise<void> {
+  const dir = join(stateDir, "cleanup", randomUUID());
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const config = join(dir, "source.json");
+  writeFileSync(config, JSON.stringify(input), { mode: 0o600, flag: "wx" });
+  const log = openSync(join(dir, "worker.log"), "ax", 0o600);
+  return new Promise((resolve, reject) => {
+    try {
+      const worker = spawn(process.execPath, ["--experimental-strip-types", workerFile, "cleanup-app", config], { cwd: input.cwd, env: independentProcessEnvironment(), detached: true, windowsHide: true, stdio: ["ignore", log, log] });
+      worker.once("error", reject);
+      worker.once("spawn", () => { worker.unref(); resolve(); });
+    } catch (error) { reject(error); }
+    finally { closeSync(log); }
+  });
+}
 /** Start a narrow detached controller that survives retirement of the source Pi. */
 export async function startRemoteMove(move: RemoteMove): Promise<any> {
   const dir = join(move.stateDir, "bridges", move.id);
@@ -173,7 +204,7 @@ export async function startRemoteMove(move: RemoteMove): Promise<any> {
   writeFileSync(config, JSON.stringify(move), { mode: 0o600, flag: "wx" });
   const log = openSync(join(dir, "controller.log"), "ax", 0o600);
   try {
-    const worker = spawn(process.execPath, ["--experimental-strip-types", workerFile, "controller", config], { cwd: move.sourceCwd, detached: true, stdio: ["ignore", log, log] });
+    const worker = spawn(process.execPath, ["--experimental-strip-types", workerFile, "controller", config], { cwd: move.sourceCwd, env: independentProcessEnvironment(), detached: true, stdio: ["ignore", log, log] });
     worker.once("error", (error) => writeFileSync(join(dir, "result.json"), JSON.stringify({ ok: false, error: `Could not start the Teleport controller: ${error.message}` }), { mode: 0o600, flag: "wx" }));
     worker.unref();
   } finally { closeSync(log); }

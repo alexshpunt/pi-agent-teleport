@@ -1,4 +1,4 @@
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
@@ -6,15 +6,16 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mergeMachineResources, prepareHerdrArrival, preserveHerdrSourceWorkspace, readState, writeState, type TeleportState } from "./core.ts";
-import { guardedLaunch, readHerdrPane, runHerdr, shellOwnsForeground, withOutput, type HerdrContext } from "./herdr.ts";
+import { assertHerdrContext, guardedLaunch, readHerdrPane, runHerdr, shellOwnsForeground, withOutput, type HerdrContext } from "./herdr.ts";
 import type { TeleportExecution } from "./output.ts";
-import { agentDirectory, piCommand, MAX_PACKET, hasSessionProcess, qualifyLocation, relocateSession, runtimeFingerprint, UnknownRemoteOutcome, shellQuote, sshOptions, validateReady, type ReadyIdentity, type RemoteMove, type ReturnRoute } from "./remote.ts";
+import { agentDirectory, requestController, MAX_PACKET, hasSessionProcess, qualifyLocation, relocateSession, runtimeFingerprint, UnknownRemoteOutcome, shellQuote, sshOptions, validateReady, type ReadyIdentity, type RemoteMove, type ReturnRoute } from "./remote.ts";
 
+import { runAppProxy } from "./app.ts";
 const implementation = runtimeFingerprint();
 type Arrival = {
   operationId: string; sessionId: string; sessionText: string; path: string; sessionName?: string;
   state: TeleportState; connection: HerdrContext; callback: Pick<ReturnRoute, "socket" | "token">;
-  fingerprint: string; from: string; to: string; execution: TeleportExecution;
+  fingerprint: string; from: string; to: string; execution: TeleportExecution; piCommand?: string[];
   dormantSource?: { operationId: string; sessionFile: string; cwd: string; snapshot: string };
 };
 type Prepared = {
@@ -35,7 +36,7 @@ function connection(session: string): HerdrContext { return { session, workspace
 type ArrivalProcessInfo = { shell_pid?: number; foreground_process_group_id?: number; foreground_processes?: Array<{ pid: number; cwd?: string; argv?: string[] }> };
 
 /** Observe launch without turning a missing callback or transient query failure into rollback. */
-export function watchArrival(input: { failure?: () => string | undefined; observe: () => ArrivalProcessInfo | undefined; output: () => string | undefined }): { ready: Promise<void>; resolve: () => void; reject: (error: Error) => void } {
+export function watchArrival(input: { failure?: () => string | undefined | Promise<string | undefined>; observe: () => ArrivalProcessInfo | undefined | Promise<ArrivalProcessInfo | undefined>; output: () => string | undefined | Promise<string | undefined> }): { ready: Promise<void>; resolve: () => void; reject: (error: Error) => void } {
   let running = false;
   let settled = false;
   let resolve!: () => void;
@@ -47,18 +48,22 @@ export function watchArrival(input: { failure?: () => string | undefined; observ
     clearInterval(poll);
     if (error) reject(error); else resolve();
   };
-  const poll = setInterval(() => {
+  let observing = false;
+  const poll = setInterval(async () => {
+    if (observing || settled) return;
+    observing = true;
     try {
-      const failure = input.failure?.();
-      if (failure) { finish(new Error(withOutput(failure, input.output()))); return; }
-      const info = input.observe();
+      const failure = await input.failure?.();
+      if (failure) { finish(new Error(withOutput(failure, await input.output()))); return; }
+      const info = await input.observe();
       if (!info) return;
       if (info.foreground_processes?.length && !shellOwnsForeground(info)) running = true;
       else if (shellOwnsForeground(info) && running) {
-        finish(new Error(withOutput("Destination Pi exited before it was ready. The source is retained.", input.output())));
+        finish(new Error(withOutput("Destination Pi exited before it was ready. The source is retained.", await input.output())));
         return;
       }
     } catch { /* Observation failed; no destination failure has been established. */ }
+    finally { observing = false; }
   }, 2_000);
   return { ready, resolve: () => finish(), reject: (error) => finish(error) };
 }
@@ -97,7 +102,11 @@ export function stageArrival(input: Arrival): Prepared {
     state.history.push({ from: input.from, to: input.to, at: Date.now(), status: "completed", toHerdr: prepared.location });
     save(join(dir, "next-state.json"), state);
     save(join(dir, "handoff.json"), { ...input.callback, ...identity(prepared), commitFile: join(dir, "committed.json"), execution: input.execution });
-    runHerdr(input.connection, ["pane", "run", prepared.location.paneId, guardedLaunch([...(process.platform === "win32" ? piCommand() : ["pi"]), "--approve", "--session", sessionFile], join(dir, "exited.json"), { PI_CODING_AGENT_DIR: prepared.agentDir, PI_TELEPORT_HANDOFF: join(dir, "handoff.json") })]);
+    const appContext = input.connection.appRoute || input.connection.appSsh ? join(dir, "app-context.json") : "";
+    if (appContext) save(appContext, input.connection);
+    const command = input.connection.backend === "app" || process.platform === "win32" ? input.piCommand : ["pi"];
+    if (!command?.length || command.some((arg) => typeof arg !== "string")) throw new Error("The arrival has no verified Pi launch command.");
+    runHerdr(input.connection, ["pane", "run", prepared.location.paneId, guardedLaunch([...command, "--approve", "--session", sessionFile], join(dir, "exited.json"), { PI_CODING_AGENT_DIR: prepared.agentDir, PI_TELEPORT_HANDOFF: join(dir, "handoff.json"), PI_TELEPORT_APP_CONTEXT: appContext })]);
     return prepared;
   } catch (error) {
     if (!destination) throw new UnknownRemoteOutcome(`Native arrival preparation is unconfirmed. Inspect ${dir} and the destination Herdr state before retrying.`);
@@ -128,12 +137,35 @@ export function abortArrival(prepared: Prepared): void {
   rmSync(prepared.dir, { recursive: true, force: true });
 }
 
+export type AppSourceCleanup = { context: HerdrContext; sourcePid: number; cwd: string; sessionFile: string };
+
+/** Close only the original App occupant, then remove its transcript after exit. */
+export async function retireAppSource(input: AppSourceCleanup): Promise<void> {
+  if (input.context.backend !== "app" || !Number.isSafeInteger(input.sourcePid) || input.sourcePid <= 0) throw new Error("Invalid App cleanup ownership.");
+  const gone = () => {
+    try { process.kill(input.sourcePid, 0); return false; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
+  };
+  assertHerdrContext(input.context);
+  const info = runHerdr(input.context, ["pane", "process-info", "--pane", input.context.paneId]).process_info;
+  if (!hasSessionProcess(info?.foreground_processes, input.sourcePid, input.cwd, input.sessionFile) && !(gone() && shellOwnsForeground(info))) throw new Error("The source pane no longer has its recorded occupant; its transcript is retained.");
+  runHerdr(input.context, ["pane", "close", input.context.paneId]);
+  const deadline = Date.now() + 5_000;
+  while (!gone()) {
+    if (Date.now() >= deadline) throw new Error("The source process has not exited; its transcript is retained.");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  rmSync(input.sessionFile, { force: true });
+  if (input.context.appRoute) await requestController(input.context.appRoute, { action: "app-retired", operationId: input.context.appRoute.operationId });
+}
 function endpoint(action: string, input: any): any {
   if (action === "reserve") {
     const dir = mkdtempSync(join(tmpdir(), "pi-teleport-"));
     return { dir, socket: join(dir, "return.sock") };
   }
   if (action === "stage") return stageArrival({ ...input, dormantSource: undefined });
+  if (action === "process") return runHerdr(input.location, ["pane", "process-info", "--pane", input.location.paneId]).process_info;
+  if (action === "output") return { output: readHerdrPane(input.location, input.location.paneId) };
   if (action === "failure") {
     const receipt = join(input.dir, "exited.json");
     return { error: existsSync(receipt) ? JSON.parse(readFileSync(receipt, "utf8")).error : undefined };
@@ -163,23 +195,23 @@ function endpoint(action: string, input: any): any {
   throw new Error("Unknown Teleport endpoint operation.");
 }
 
-function remoteEndpoint<T = any>(move: RemoteMove, action: string, input: unknown): T {
-  let output: string;
-  try {
-    output = execFileSync("ssh", [...sshOptions, move.host, `PI_CODING_AGENT_DIR=${shellQuote(move.remoteAgentDir)} node --experimental-strip-types ${shellQuote(move.remoteWorker)} endpoint ${shellQuote(action)}`], {
-      input: JSON.stringify(input), encoding: "utf8", maxBuffer: MAX_PACKET, stdio: ["pipe", "pipe", "pipe"],
+/** SSH must not block the controller: staging may call back for App UI. */
+function remoteEndpoint<T = any>(move: RemoteMove, action: string, input: unknown): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const child = execFile("ssh", [...sshOptions, move.host, `PI_CODING_AGENT_DIR=${shellQuote(move.remoteAgentDir)} node --experimental-strip-types ${shellQuote(move.remoteWorker)} endpoint ${shellQuote(action)}`], {
+      encoding: "utf8", maxBuffer: MAX_PACKET,
+    }, (error, output) => {
+      if (error && !output.trim()) { reject(new UnknownRemoteOutcome(`Remote ${action} outcome is unconfirmed. Inspect the handoff receipt before retrying.`)); return; }
+      let result: any;
+      try { result = JSON.parse(output); }
+      catch { reject(new UnknownRemoteOutcome(`Remote ${action} returned an unrecognized receipt. Inspect the handoff before retrying.`)); return; }
+      if (result.ok === false && typeof result.error === "string") { reject(result.uncertain ? new UnknownRemoteOutcome(result.error) : new Error(result.error)); return; }
+      if (result.ok !== true) { reject(new UnknownRemoteOutcome(`Remote ${action} receipt is unconfirmed.`)); return; }
+      resolve(result.result);
     });
-  } catch (error) {
-    const response = (error as { stdout?: string }).stdout;
-    if (!response?.trim()) throw new UnknownRemoteOutcome(`Remote ${action} outcome is unconfirmed. Inspect the handoff receipt before retrying.`);
-    output = response;
-  }
-  let result: any;
-  try { result = JSON.parse(output); }
-  catch { throw new UnknownRemoteOutcome(`Remote ${action} returned an unrecognized receipt. Inspect the handoff before retrying.`); }
-  if (result.ok === false && typeof result.error === "string") throw result.uncertain ? new UnknownRemoteOutcome(result.error) : new Error(result.error);
-  if (result.ok !== true) throw new UnknownRemoteOutcome(`Remote ${action} receipt is unconfirmed.`);
-  return result.result;
+    child.stdin!.on("error", () => {}); // The callback classifies a lost transport, including early stdin closure.
+    child.stdin!.end(JSON.stringify(input));
+  });
 }
 
 /** Keep an authenticated Unix-socket return bridge alive after the source Pi exits. */
@@ -196,6 +228,8 @@ async function controller(config: string): Promise<void> {
   let committed = false;
   let returning = false;
   let pending: { expected: ReadyIdentity; resolve: () => void; reject: (error: Error) => void; remote: boolean } | undefined;
+  let releasePrepared!: () => void;
+  const preparation = new Promise<void>((resolve) => { releasePrepared = resolve; });
   const accepted = new Map<string, { expected: ReadyIdentity; remote: boolean }>();
   let closed = false;
   let reconnects = 0;
@@ -217,6 +251,19 @@ async function controller(config: string): Promise<void> {
     try {
       const packet = JSON.parse(content);
       if (typeof packet.token !== "string" || packet.token.length !== token.length || !timingSafeEqual(Buffer.from(packet.token), Buffer.from(token))) throw new Error("Unauthenticated Teleport callback.");
+      if (packet.action === "app") {
+        const result = runAppProxy(move.herdr, move.machine, packet.args);
+        socket.end(`${JSON.stringify({ ok: true, result })}\n`);
+        return;
+      }
+      if (packet.action === "app-retired") {
+        if (move.herdr.backend !== "app" || packet.operationId !== move.id) throw new Error("No matching App route is retiring.");
+        socket.end(`${JSON.stringify({ ok: true })}\n`);
+        if (committed && returning) setTimeout(cleanup, 250);
+        return;
+      }
+      // An asynchronous SSH stage may launch Pi before its prepared receipt arrives.
+      if ((packet.action === "ready" || packet.action === "failed") && packet.operationId === move.id && stageAttempted && !pending && !accepted.has(move.id)) await preparation;
       if (packet.action === "failed") {
         // The destination Pi reports why it cannot continue, before it exits.
         if (!pending || packet.operationId !== pending.expected.operationId || typeof packet.error !== "string") throw new Error("No matching Teleport arrival is awaiting readiness.");
@@ -230,7 +277,7 @@ async function controller(config: string): Promise<void> {
         try {
           validateReady(arrival.expected, packet);
           let info;
-          try { info = paneProcess(arrival.expected.paneId, arrival.remote); }
+          try { info = await paneProcess(arrival.expected.paneId, arrival.remote); }
           catch { throw new UnknownRemoteOutcome("Destination process observation is unavailable; its handoff remains pending."); }
           if (!hasSessionProcess(info?.foreground_processes, packet.pid, arrival.expected.cwd, arrival.expected.sessionFile)) throw new Error("The expected destination Pi is not running in its owned Herdr pane.");
           if (arrival === pending) pending.resolve();
@@ -254,7 +301,7 @@ async function controller(config: string): Promise<void> {
           operationId: randomUUID(), sessionId: move.sessionId, sessionText: packet.sessionText, path: move.sourceCwd, sessionName: packet.sessionName,
           state, connection: move.herdr, callback: { socket: localSocket, token }, fingerprint: move.fingerprint,
           dormantSource: { operationId: move.id, sessionFile: move.sourceSession, cwd: move.sourceCwd, snapshot: move.sessionText },
-          from: qualifyLocation(packet.cwd, move.host), to: qualifyLocation(move.sourceCwd, state.machine), execution: packet.execution,
+          from: qualifyLocation(packet.cwd, move.host), to: qualifyLocation(move.sourceCwd, state.machine), execution: packet.execution, piCommand: move.localCommand,
         };
         arrival = stageArrival(input);
         await awaitReady(arrival, false);
@@ -280,11 +327,11 @@ async function controller(config: string): Promise<void> {
         }
         socket.end(`${JSON.stringify({ ok: true, destination: input.to })}\n`);
         // Allow the remote command to receive the committed receipt before closing its tunnel.
-        setTimeout(() => { cleanup(); }, 1_000);
+        if (move.herdr.backend !== "app") setTimeout(() => { cleanup(); }, 1_000);
       } catch (error) {
         if (arrival && existsSync(join(arrival.dir, "committed.json"))) {
           socket.end(`${JSON.stringify({ ok: true, destination: qualifyLocation(move.sourceCwd, move.state.machine), warning: "Return committed; cleanup needs inspection." })}\n`);
-          setTimeout(cleanup, 1_000);
+          if (move.herdr.backend !== "app") setTimeout(cleanup, 1_000);
           return;
         }
         returning = false;
@@ -296,7 +343,8 @@ async function controller(config: string): Promise<void> {
       }
     } catch (error) { socket.end(`${JSON.stringify({ ok: false, uncertain: error instanceof UnknownRemoteOutcome, error: error instanceof Error ? error.message : String(error) })}\n`); }
   }
-  function paneProcess(paneId: string, remote: boolean): any {
+  async function paneProcess(paneId: string, remote: boolean): Promise<any> {
+    if (remote && move.herdr.backend === "app") return remoteEndpoint(move, "process", { location: outward!.location });
     return remote
       ? JSON.parse(execFileSync("herdr", ["--machine", move.machine, "pane", "process-info", "--pane", paneId], { encoding: "utf8", timeout: 15_000 })).result?.process_info
       : runHerdr(move.herdr, ["pane", "process-info", "--pane", paneId]).process_info;
@@ -304,13 +352,16 @@ async function controller(config: string): Promise<void> {
   /** Wait for startup without a deadline; only confirmed failure permits rollback. */
   async function awaitReady(arrival: Prepared, remote: boolean): Promise<void> {
     const watch = watchArrival({
-      failure: () => remote
-        ? remoteEndpoint<{ error?: string }>(move, "failure", arrival).error
+      failure: async () => remote
+        ? (await remoteEndpoint<{ error?: string }>(move, "failure", arrival)).error
         : endpoint("failure", arrival).error,
       observe: () => paneProcess(arrival.location.paneId, remote),
-      output: () => readHerdrPane(arrival.location, arrival.location.paneId, remote ? move.machine : undefined),
+      output: async () => remote && move.herdr.backend === "app"
+        ? (await remoteEndpoint<{ output?: string }>(move, "output", arrival)).output
+        : readHerdrPane(arrival.location, arrival.location.paneId, remote ? move.machine : undefined),
     });
     pending = { expected: identity(arrival), remote, resolve: watch.resolve, reject: watch.reject };
+    if (remote) releasePrepared();
     try {
       await watch.ready;
       accepted.set(arrival.operationId, { expected: identity(arrival), remote });
@@ -321,11 +372,11 @@ async function controller(config: string): Promise<void> {
     save(join(dirname(config), "channel.json"), { phase: "disconnected", attempts: reconnects, localSocket, reservation, host: move.host });
     if (reconnects >= 3) return; // Keep the narrow controller alive for an inspected manual reconnection.
     reconnects += 1;
-    reconnectTimer = setTimeout(() => {
+    reconnectTimer = setTimeout(async () => {
       reconnectTimer = undefined;
       if (closed) return;
       try {
-        remoteEndpoint(move, "reset-socket", reservation);
+        await remoteEndpoint(move, "reset-socket", reservation);
         startTunnel();
       } catch (error) { console.error(`Return channel reconnection failed: ${String(error)}`); reconnectTunnel(); }
     }, reconnects * 1_000);
@@ -344,17 +395,18 @@ async function controller(config: string): Promise<void> {
   function cleanup(): void {
     if (closed) return;
     closed = true;
+    releasePrepared();
     if (reconnectTimer) clearTimeout(reconnectTimer);
     server.close();
     tunnel?.kill("SIGTERM");
     if (reservation) {
-      try { remoteEndpoint(move, "cleanup-socket", reservation); } catch (error) { console.error(String(error)); }
+      void remoteEndpoint(move, "cleanup-socket", reservation).catch((error) => console.error(String(error)));
     }
     rmSync(localDir, { recursive: true, force: true });
   }
   try {
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(localSocket, resolve); });
-    reservation = remoteEndpoint<{ dir: string; socket: string }>(move, "reserve", {});
+    reservation = await remoteEndpoint<{ dir: string; socket: string }>(move, "reserve", {});
     startTunnel();
     const source = qualifyLocation(move.sourceCwd, move.state.machine);
     const target = qualifyLocation(move.path, move.host);
@@ -362,17 +414,20 @@ async function controller(config: string): Promise<void> {
     state.machine = move.host;
     state.returnRoute = { socket: reservation.socket, token, operationId: move.id, previous: source };
     stageAttempted = true;
-    outward = remoteEndpoint<Prepared>(move, "stage", {
+    const remoteConnection = move.herdr.backend === "app"
+      ? { ...move.remoteCore, ...connection(move.remoteSession), backend: "app" as const, appMachine: move.machine, appRoute: { socket: reservation.socket, token, operationId: move.id } }
+      : connection(move.remoteSession);
+    outward = await remoteEndpoint<Prepared>(move, "stage", {
       operationId: move.id, sessionId: move.sessionId, sessionText: move.sessionText, path: move.path, sessionName: move.sessionName,
-      state, execution: move.execution, connection: connection(move.remoteSession), callback: { socket: reservation.socket, token }, fingerprint: move.fingerprint, from: source, to: target,
+      state, execution: move.execution, connection: remoteConnection, piCommand: move.remoteCommand, callback: { socket: reservation.socket, token }, fingerprint: move.fingerprint, from: source, to: target,
     } satisfies Arrival);
     save(join(dirname(config), "destination.json"), outward);
     await awaitReady(outward, true);
     try {
-      remoteEndpoint(move, "commit", outward);
+      await remoteEndpoint(move, "commit", outward);
       committed = true;
     } catch (error) {
-      try { committed = remoteEndpoint(move, "status", outward).committed === true; }
+      try { committed = (await remoteEndpoint(move, "status", outward)).committed === true; }
       catch {
         save(receipt, { ok: false, uncertain: true, error: "Remote commit outcome is unknown. Keep this source idle and inspect the destination before retrying." });
         // Keep the authenticated return bridge available if commit reached the destination.
@@ -394,12 +449,12 @@ async function controller(config: string): Promise<void> {
     }
     let failure = error;
     if (!outward && stageAttempted && error instanceof UnknownRemoteOutcome) {
-      try { outward = remoteEndpoint(move, "lookup", { sessionId: move.sessionId, operationId: move.id }).prepared; }
+      try { outward = (await remoteEndpoint(move, "lookup", { sessionId: move.sessionId, operationId: move.id })).prepared; }
       catch { /* The deterministic receipt remains an explicit inspection target. */ }
     }
     if (outward) {
       try {
-        remoteEndpoint(move, "abort", outward);
+        await remoteEndpoint(move, "abort", outward);
         failure = new Error(`Remote move did not commit; its prepared destination was closed. ${String(error)}`);
       } catch { failure = new UnknownRemoteOutcome("Prepared destination cleanup is unconfirmed. Inspect the saved destination receipt and Herdr pane before retrying."); }
     }
@@ -409,13 +464,32 @@ async function controller(config: string): Promise<void> {
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  if (process.argv[2] === "endpoint") {
+  if (process.argv[2] === "app-request") {
+    try {
+      const content = readFileSync(0, "utf8");
+      if (Buffer.byteLength(content) > MAX_PACKET) throw new Error("App UI request exceeds its limit.");
+      const input = JSON.parse(content);
+      requestController(input.route, { action: "app", args: input.args }).then(
+        (result) => process.stdout.write(JSON.stringify(result)),
+        (error) => { process.stdout.write(JSON.stringify({ ok: false, uncertain: error instanceof UnknownRemoteOutcome, error: String(error) })); process.exitCode = 1; },
+      );
+    } catch (error) { process.stdout.write(JSON.stringify({ ok: false, error: String(error) })); process.exitCode = 1; }
+  } else if (process.argv[2] === "endpoint") {
     try {
       const content = readFileSync(0, "utf8");
       if (Buffer.byteLength(content) > MAX_PACKET) throw new Error("Teleport transfer exceeds 64 MiB.");
       const result = endpoint(process.argv[3], JSON.parse(content));
       process.stdout.write(JSON.stringify({ ok: true, result }));
     } catch (error) { process.stdout.write(JSON.stringify({ ok: false, uncertain: error instanceof UnknownRemoteOutcome, error: error instanceof Error ? error.message : String(error) })); process.exitCode = 1; }
+  } else if (process.argv[2] === "cleanup-app") {
+    const config = process.argv[3];
+    const input = JSON.parse(readFileSync(config, "utf8")) as AppSourceCleanup;
+    setTimeout(() => {
+      retireAppSource(input).then(
+        () => save(join(dirname(config), "result.json"), { ok: true }),
+        (error) => { save(join(dirname(config), "result.json"), { ok: false, error: String(error) }); console.error(error); process.exitCode = 1; },
+      );
+    }, 250);
   } else if (process.argv[2] === "controller") {
     controller(process.argv[3]).catch((error) => { console.error(error); process.exitCode = 1; });
   }

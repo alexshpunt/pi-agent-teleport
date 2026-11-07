@@ -8,9 +8,9 @@ import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import { ownsExecution, registerTeleportOutput, type TeleportExecution, type TeleportOutcome } from "./output.ts";
 import { createManagedWorktree, prepareHerdrDestination, preserveHerdrSourceWorkspace, readState, reconcileState, removeManagedWorktree, writeState, type Resource } from "./core.ts";
-import { assertHerdrContext, getHerdrContext, guardedLaunch, powershellCommand, powershellQuote, runHerdr, type HerdrContext } from "./herdr.ts";
+import { appConnection, assertHerdrContext, getHerdrContext, guardedLaunch, powershellCommand, powershellQuote, runHerdr, type HerdrContext } from "./herdr.ts";
 import { awaitHerdrArrival, preflightSession, writeReadiness } from "./readiness.ts";
-import { UnknownRemoteOutcome, agentDirectory, piCommand, confirmArrival, extensionFile, parseTarget, probeRemote, qualifyLocation, remoteMachine, requestController, runtimeFingerprint, shellQuote as quote, startRemoteMove, workerFile } from "./remote.ts";
+import { UnknownRemoteOutcome, agentDirectory, piCommand, confirmArrival, extensionFile, parseTarget, probeRemote, qualifyLocation, remoteMachine, requestController, runtimeFingerprint, shellQuote as quote, startAppSourceCleanup, startRemoteMove, workerFile } from "./remote.ts";
 
 function dataDir(sessionId: string): string { return join(process.env.PI_CODING_AGENT_DIR ?? join(process.env.HOME ?? homedir(), ".pi", "agent"), "teleport", sessionId); }
 function serialize(ctx: ExtensionCommandContext, target: string): { source: string; destination: string } {
@@ -47,8 +47,9 @@ export function formatRemovedWorktree(resource: Resource): string {
   return `Removed worktree ${qualifyLocation(resource.path, resource.machine)}\nBranch: ${resource.branch}`;
 }
 
-async function scheduleSourceCleanup(pi: ExtensionAPI, context: HerdrContext, cwd: string, sessionFile: string): Promise<void> {
+async function scheduleSourceCleanup(pi: ExtensionAPI, context: HerdrContext, cwd: string, sessionFile: string, stateDir: string): Promise<void> {
   preserveHerdrSourceWorkspace(context, cwd);
+  if (context.backend === "app") return startAppSourceCleanup({ context, cwd, sessionFile, sourcePid: process.pid }, stateDir);
   const cleanup = buildSourcePaneCleanup(context.paneId, process.pid, sessionFile);
   const result = process.platform === "win32"
     // Start-Process owns a separate hidden window, so closing the source pane cannot kill cleanup.
@@ -71,7 +72,7 @@ export default function teleport(pi: ExtensionAPI) {
   });
   pi.on("tool_execution_end", (event) => { executions.delete(event.toolCallId); });
   if (process.env.PI_TELEPORT_PROBE) {
-    process.stdout.write(`PI_TELEPORT_PROBE:${process.env.PI_TELEPORT_PROBE}:${JSON.stringify({ fingerprint: implementation, worker: workerFile, agentDir: agentDirectory(), version: VERSION })}\n`);
+    process.stdout.write(`PI_TELEPORT_PROBE:${process.env.PI_TELEPORT_PROBE}:${JSON.stringify({ fingerprint: implementation, worker: workerFile, agentDir: agentDirectory(), version: VERSION, command: piCommand(), core: appConnection() })}\n`);
   }
   let sessionId = "unknown";
   let dir = dataDir(sessionId);
@@ -103,7 +104,7 @@ export default function teleport(pi: ExtensionAPI) {
   }
 
   async function retireSource(ctx: ExtensionCommandContext, source: string, context: HerdrContext) {
-    try { await scheduleSourceCleanup(pi, context, ctx.cwd, source); }
+    try { await scheduleSourceCleanup(pi, context, ctx.cwd, source, dir); }
     catch (error) { notify(ctx, `Destination is running. Could not close source pane ${context.paneId}: ${String(error)}`, "error"); }
     ctx.shutdown();
   }
@@ -113,11 +114,11 @@ export default function teleport(pi: ExtensionAPI) {
     if (!herdr) throw new Error("Remote Teleport requires Herdr on both machines. Local moves still work without Herdr.");
     assertHerdrContext(herdr);
     const { source, sessionText } = snapshot(ctx);
-    const profile = remoteMachine(host);
+    const profile = remoteMachine(host, herdr);
     const remote = probeRemote(host, path, implementation);
     const id = randomUUID();
     const state = readState(dir);
-    const move = { id, host, path, ...profile, sourceCwd: ctx.cwd, sourceSession: source, sourcePid: process.pid, sessionText, sessionId, execution, sessionName: ctx.sessionManager.getSessionName(), state, stateDir: dir, herdr, fingerprint: implementation, remoteWorker: remote.worker, remoteAgentDir: remote.agentDir, localVersion: VERSION, remoteVersion: remote.version };
+    const move = { id, host, path, ...profile, sourceCwd: ctx.cwd, sourceSession: source, sourcePid: process.pid, sessionText, sessionId, execution, sessionName: ctx.sessionManager.getSessionName(), state, stateDir: dir, herdr, fingerprint: implementation, remoteWorker: remote.worker, remoteAgentDir: remote.agentDir, localVersion: VERSION, remoteVersion: remote.version, localCommand: piCommand(), remoteCommand: remote.command, remoteCore: remote.core };
     state.pendingRemote = { id, receipt: join(dir, "bridges", id, "result.json") };
     writeState(dir, state);
     // Keep the captured source state independent from the in-flight marker.
@@ -191,7 +192,7 @@ export default function teleport(pi: ExtensionAPI) {
         prepared = prepareHerdrDestination(context, target, resource?.herdr, ctx.sessionManager.getSessionName());
         const location = prepared.location;
         const continuation = Buffer.from(JSON.stringify({ execution, from: qualifyLocation(sourceCwd, state.machine), to: qualifyLocation(target, state.machine), receipt }), "utf8").toString("base64url");
-        runHerdr(context, ["pane", "run", location.paneId, guardedLaunch([...(process.platform === "win32" ? piCommand() : ["pi"]), "--approve", "--session", destination], receipt, { PI_CODING_AGENT_DIR: agentDirectory(), PI_TELEPORT_CONTINUATION: continuation })]);
+        runHerdr(context, ["pane", "run", location.paneId, guardedLaunch([...(context.backend === "app" || process.platform === "win32" ? piCommand() : ["pi"]), "--approve", "--session", destination], receipt, { PI_CODING_AGENT_DIR: agentDirectory(), PI_TELEPORT_CONTINUATION: continuation, PI_TELEPORT_APP_CONTEXT: process.env.PI_TELEPORT_APP_CONTEXT || "" })]);
         // The destination stays gated until this commit; the source retires only after its own readiness verdict.
         await awaitHerdrArrival(context, location.paneId, destination, receipt);
         state = readState(dir);
@@ -212,7 +213,7 @@ export default function teleport(pi: ExtensionAPI) {
         throw error;
       }
       // A confirmed destination must never be rolled back if source cleanup fails.
-      try { await scheduleSourceCleanup(pi, context, sourceCwd, source); }
+      try { await scheduleSourceCleanup(pi, context, sourceCwd, source, dir); }
       catch (error) { notify(ctx, `Destination is running. Could not close source pane ${context.paneId}: ${String(error)}`, "error"); }
       ctx.shutdown();
       return;

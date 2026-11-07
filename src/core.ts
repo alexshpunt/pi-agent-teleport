@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFil
 import { basename, dirname, join, resolve } from "node:path";
 import { assertHerdrContext, herdrLocation, isHerdrShell, runHerdr, sameHerdrConnection, type HerdrContext, type HerdrLocation } from "./herdr.ts";
 import type { ReturnRoute } from "./remote.ts";
+import { appSpaces } from "./app.ts";
 
 export const STATE_VERSION = 1 as const;
 export type Location = { cwd: string; sessionFile: string; herdr?: HerdrLocation };
@@ -99,10 +100,30 @@ export function prepareHerdrArrival(context: HerdrContext, target: string, sessi
 }
 
 type PreparedDestination = { location: HerdrLocation; rollback: () => void; rollbackArgs: string[] };
+
+/** App has public spaces/tabs, not worktree commands. Git owns checkout operations. */
+function prepareAppDestination(context: HerdrContext, target: string, checkout: boolean, owned: Resource["herdr"] | undefined, label: string, separateWorkspace: boolean): PreparedDestination {
+  const spaces = appSpaces(context).filter((space) => !space.machine);
+  const space = checkout
+    ? spaces.find((space) => space.folder && canonical(space.folder) === canonical(target))
+    : separateWorkspace ? undefined : spaces.find((space) => space.id === context.workspaceId);
+  if (space && owned && sameHerdrConnection(context, owned) && space.id === owned.workspaceId && space.tabs.length === 1 && space.tabs[0].id === owned.tabId && space.tabs[0].terminals.length === 1 && space.tabs[0].terminals[0].terminal === owned.paneId && isHerdrShell(context, owned.paneId)) {
+    runHerdr(context, ["tab", "rename", owned.tabId, label]);
+    const rollbackArgs = ["tab", "close", owned.tabId];
+    return { location: { ...owned }, rollbackArgs, rollback: () => { runHerdr(context, rollbackArgs); } };
+  }
+  const result = space
+    ? runHerdr(context, ["tab", "create", "--workspace", space.id, "--cwd", target, "--label", label, "--no-focus"])
+    : runHerdr(context, ["workspace", "create", "--cwd", target, "--label", label, "--no-focus"]);
+  const location = herdrLocation(context, result);
+  const rollbackArgs = space ? ["tab", "close", location.tabId] : ["workspace", "close", location.workspaceId];
+  return { location, rollbackArgs, rollback: () => { runHerdr(context, rollbackArgs); } };
+}
 function prepareDestination(context: HerdrContext, target: string, owned?: Resource["herdr"], sessionName?: string, separateWorkspace = false): PreparedDestination {
   const label = sessionName || basename(target) || target;
   let checkout = false;
   try { checkout = canonical(git(target, ["rev-parse", "--show-toplevel"])) === canonical(target); } catch { /* Plain directories use the current workspace. */ }
+  if (context.backend === "app") return prepareAppDestination(context, target, checkout, owned, label, separateWorkspace);
   if (checkout) {
     const opened = runHerdr(context, ["worktree", "open", "--cwd", primaryRepo(target), "--path", target, "--no-focus"]);
     const location = herdrLocation(context, opened, target);
@@ -138,7 +159,8 @@ export function createManagedWorktree(input: { repo: string; branch: string; bas
   if (requestedPath && existsSync(requestedPath)) throw new Error(`Worktree path already exists: ${requestedPath}`);
   let path: string;
   let herdr: Resource["herdr"];
-  if (input.herdr) {
+  if (input.herdr?.backend === "app") assertHerdrContext(input.herdr);
+  if (input.herdr && input.herdr.backend !== "app") {
     assertHerdrContext(input.herdr);
     const parent = primaryRepo(repo);
     const args = ["worktree", "create", "--cwd", parent, "--branch", input.branch];
@@ -167,6 +189,18 @@ export function createManagedWorktree(input: { repo: string; branch: string; bas
   } else {
     try { git(repo, ["worktree", "add", "-b", input.branch, path, input.base ?? "HEAD"]); }
     catch (error) { delete state.resources[id]; writeState(input.stateDir, state); throw error; }
+
+    if (input.herdr?.backend === "app") {
+      resource.herdr = { ...input.herdr, workspaceId: "", tabId: "", paneId: "", parentWorkspaceId: input.herdr.workspaceId };
+      writeState(input.stateDir, state);
+      try {
+        const result = runHerdr(input.herdr, ["workspace", "create", "--cwd", path, "--label", input.branch, "--no-focus"]);
+        resource.herdr = { ...herdrLocation(input.herdr, result), parentWorkspaceId: input.herdr.workspaceId };
+        writeState(input.stateDir, state);
+      } catch (error) {
+        throw new Error(`Created Git worktree ${path}, but its App space is unconfirmed. Recover with resourceId: ${id}. ${String(error)}`);
+      }
+    }
   }
   return resource;
 }
@@ -188,7 +222,18 @@ export function removeManagedWorktree(input: { repo: string; id: string; stateDi
   const expected = canonical(resolve(resource.repo, git(resource.repo, ["rev-parse", "--git-common-dir"])));
   if (common !== expected) throw new Error("The worktree no longer belongs to the recorded repository.");
   if (git(resource.path, ["status", "--porcelain"])) throw new Error("Refusing to remove a dirty managed worktree.");
-  if (resource.herdr && input.herdr) {
+  if (resource.herdr?.backend === "app" && input.herdr) {
+    assertHerdrContext(input.herdr);
+    const spaces = appSpaces(input.herdr).filter((space) => !space.machine && space.folder && canonical(space.folder) === canonical(resource.path));
+    if (spaces.length) {
+      const space = spaces[0];
+      if (spaces.length !== 1 || space.id !== resource.herdr.workspaceId || space.tabs.length !== 1 || space.tabs[0].id !== resource.herdr.tabId || space.tabs[0].terminals.length !== 1 || space.tabs[0].terminals[0].terminal !== resource.herdr.paneId || !isHerdrShell(input.herdr, resource.herdr.paneId)) throw new Error("Refusing to remove an occupied Herdr App space.");
+      // Park only our terminal: never close unseen mod panes in the same tab.
+      runHerdr(input.herdr, ["pane", "close", resource.herdr.paneId]);
+      if (appSpaces(input.herdr).some((space) => !space.machine && space.folder && canonical(space.folder) === canonical(resource.path))) throw new Error("The App space still contains other panes; close them before removing the checkout.");
+    }
+    git(resource.repo, ["worktree", "remove", resource.path]);
+  } else if (resource.herdr && input.herdr) {
     assertHerdrContext(input.herdr);
     const opened = runHerdr(input.herdr, ["worktree", "open", "--cwd", primaryRepo(resource.repo), "--path", resource.path, "--no-focus"]);
     const location = herdrLocation(input.herdr, opened, resource.path);
