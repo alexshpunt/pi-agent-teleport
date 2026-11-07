@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { mergeMachineResources, prepareHerdrArrival, preserveHerdrSourceWorkspace, readState, writeState, type TeleportState } from "./core.ts";
 import { assertHerdrContext, guardedLaunch, readHerdrPane, runHerdr, shellOwnsForeground, withOutput, type HerdrContext } from "./herdr.ts";
 import type { TeleportExecution } from "./output.ts";
-import { agentDirectory, requestController, MAX_PACKET, hasSessionProcess, qualifyLocation, relocateSession, runtimeFingerprint, UnknownRemoteOutcome, shellQuote, sshOptions, validateReady, type ReadyIdentity, type RemoteMove, type ReturnRoute } from "./remote.ts";
+import { agentDirectory, requestController, MAX_PACKET, hasSessionProcess, qualifyLocation, relocateSession, runtimeFingerprint, UnknownRemoteOutcome, remoteNodeCommand, waitForForward, sshOptions, validateReady, type ReadyIdentity, type RemoteMove, type ReturnRoute } from "./remote.ts";
 
 import { runAppProxy } from "./app.ts";
 const implementation = runtimeFingerprint();
@@ -137,26 +137,37 @@ export function abortArrival(prepared: Prepared): void {
   rmSync(prepared.dir, { recursive: true, force: true });
 }
 
-export type AppSourceCleanup = { context: HerdrContext; sourcePid: number; cwd: string; sessionFile: string };
+export type AppSourceCleanup = { context: HerdrContext; sourcePid: number; cwd: string; sessionFile: string; retireRoute?: Pick<ReturnRoute, "socket" | "token" | "operationId"> };
+
+function appSourceGone(input: AppSourceCleanup): boolean {
+  try { process.kill(input.sourcePid, 0); return false; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
+}
+function assertAppSource(input: AppSourceCleanup): void {
+  if (input.context.backend !== "app" || !Number.isSafeInteger(input.sourcePid) || input.sourcePid <= 0) throw new Error("Invalid App cleanup ownership.");
+  assertHerdrContext(input.context);
+  const info = runHerdr(input.context, ["pane", "process-info", "--pane", input.context.paneId]).process_info;
+  if (!hasSessionProcess(info?.foreground_processes, input.sourcePid, input.cwd, input.sessionFile) && !(appSourceGone(input) && shellOwnsForeground(info))) throw new Error("The source pane no longer has its recorded occupant; its transcript is retained.");
+}
 
 /** Close only the original App occupant, then remove its transcript after exit. */
 export async function retireAppSource(input: AppSourceCleanup): Promise<void> {
-  if (input.context.backend !== "app" || !Number.isSafeInteger(input.sourcePid) || input.sourcePid <= 0) throw new Error("Invalid App cleanup ownership.");
-  const gone = () => {
-    try { process.kill(input.sourcePid, 0); return false; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
-  };
-  assertHerdrContext(input.context);
-  const info = runHerdr(input.context, ["pane", "process-info", "--pane", input.context.paneId]).process_info;
-  if (!hasSessionProcess(info?.foreground_processes, input.sourcePid, input.cwd, input.sessionFile) && !(gone() && shellOwnsForeground(info))) throw new Error("The source pane no longer has its recorded occupant; its transcript is retained.");
+  assertAppSource(input);
   runHerdr(input.context, ["pane", "close", input.context.paneId]);
   const deadline = Date.now() + 5_000;
-  while (!gone()) {
+  while (!appSourceGone(input)) {
     if (Date.now() >= deadline) throw new Error("The source process has not exited; its transcript is retained.");
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   rmSync(input.sessionFile, { force: true });
-  if (input.context.appRoute) await requestController(input.context.appRoute, { action: "app-retired", operationId: input.context.appRoute.operationId });
+  const route = input.retireRoute || input.context.appRoute;
+  if (route) await requestController(route, { action: "app-retired", operationId: route.operationId });
+}
+/** Run desktop cleanup from an independent SSH process, outside the retiring terminal's job. */
+export async function retireDesktopSource(input: AppSourceCleanup): Promise<void> {
+  assertAppSource(input);
+  preserveHerdrSourceWorkspace(input.context, input.cwd);
+  await retireAppSource(input);
 }
 function endpoint(action: string, input: any): any {
   if (action === "reserve") {
@@ -198,7 +209,9 @@ function endpoint(action: string, input: any): any {
 /** SSH must not block the controller: staging may call back for App UI. */
 function remoteEndpoint<T = any>(move: RemoteMove, action: string, input: unknown): Promise<T> {
   return new Promise((resolve, reject) => {
-    const child = execFile("ssh", [...sshOptions, move.host, `PI_CODING_AGENT_DIR=${shellQuote(move.remoteAgentDir)} node --experimental-strip-types ${shellQuote(move.remoteWorker)} endpoint ${shellQuote(action)}`], {
+    const config = JSON.stringify({ agentDir: move.remoteAgentDir, worker: move.remoteWorker, action });
+    const program = `const cfg=${config}; const result=require('node:child_process').spawnSync(process.execPath,['--experimental-strip-types',cfg.worker,'endpoint',cfg.action],{env:{...process.env,PI_CODING_AGENT_DIR:cfg.agentDir},stdio:'inherit'}); if(result.error){console.error(result.error);process.exitCode=1}else process.exitCode=result.status??1;`;
+    const child = execFile("ssh", [...sshOptions, move.host, remoteNodeCommand(program)], {
       encoding: "utf8", maxBuffer: MAX_PACKET,
     }, (error, output) => {
       if (error && !output.trim()) { reject(new UnknownRemoteOutcome(`Remote ${action} outcome is unconfirmed. Inspect the handoff receipt before retrying.`)); return; }
@@ -289,6 +302,7 @@ async function controller(config: string): Promise<void> {
         return;
       }
       if (packet.action !== "return" || packet.operationId !== move.id || !committed || returning) throw new Error("The return route is not available for this operation.");
+      if (move.desktop && (!outward || !Number.isSafeInteger(packet.sourcePid) || packet.sourcePid <= 0 || packet.cwd !== outward.cwd)) throw new Error("The returning desktop source identity is invalid.");
       returning = true;
       let arrival: Prepared | undefined;
       try {
@@ -325,13 +339,10 @@ async function controller(config: string): Promise<void> {
             }
           } catch (error) { console.error(`Returned destination is running; retained source cleanup needs inspection: ${String(error)}`); }
         }
-        socket.end(`${JSON.stringify({ ok: true, destination: input.to })}\n`);
-        // Allow the remote command to receive the committed receipt before closing its tunnel.
-        if (move.herdr.backend !== "app") setTimeout(() => { cleanup(); }, 1_000);
+        finishReturn(socket, input.to, packet.sourcePid);
       } catch (error) {
         if (arrival && existsSync(join(arrival.dir, "committed.json"))) {
-          socket.end(`${JSON.stringify({ ok: true, destination: qualifyLocation(move.sourceCwd, move.state.machine), warning: "Return committed; cleanup needs inspection." })}\n`);
-          if (move.herdr.backend !== "app") setTimeout(cleanup, 1_000);
+          finishReturn(socket, qualifyLocation(move.sourceCwd, move.state.machine), packet.sourcePid, "Return committed; cleanup needs inspection.");
           return;
         }
         returning = false;
@@ -342,6 +353,21 @@ async function controller(config: string): Promise<void> {
         throw error;
       }
     } catch (error) { socket.end(`${JSON.stringify({ ok: false, uncertain: error instanceof UnknownRemoteOutcome, error: error instanceof Error ? error.message : String(error) })}\n`); }
+  }
+  function finishReturn(socket: Socket, destination: string, sourcePid: number, warning?: string): void {
+    socket.end(`${JSON.stringify({ ok: true, destination, ...(warning ? { warning } : {}), ...(move.desktop ? { cleanupScheduled: true } : {}) })}\n`);
+    if (move.desktop) {
+      const source: AppSourceCleanup = { context: outward!.location, sourcePid, cwd: outward!.cwd, sessionFile: outward!.sessionFile };
+      setTimeout(() => {
+        void remoteEndpoint(move, "retire-desktop", source).then(() => {
+          save(join(dirname(config), "return-cleanup.json"), { ok: true });
+          cleanup();
+        }, (error) => {
+          save(join(dirname(config), "return-cleanup.json"), { ok: false, error: String(error) });
+          console.error(`Returned desktop source cleanup needs inspection: ${String(error)}`);
+        });
+      }, 1_000);
+    } else if (move.herdr.backend !== "app") setTimeout(cleanup, 1_000);
   }
   async function paneProcess(paneId: string, remote: boolean): Promise<any> {
     if (remote && move.herdr.backend === "app") return remoteEndpoint(move, "process", { location: outward!.location });
@@ -376,14 +402,18 @@ async function controller(config: string): Promise<void> {
       reconnectTimer = undefined;
       if (closed) return;
       try {
-        await remoteEndpoint(move, "reset-socket", reservation);
-        startTunnel();
+        if (move.remotePlatform !== "win32") await remoteEndpoint(move, "reset-socket", reservation);
+        await startTunnel();
       } catch (error) { console.error(`Return channel reconnection failed: ${String(error)}`); reconnectTunnel(); }
     }, reconnects * 1_000);
   }
-  function startTunnel(): void {
-    if (!reservation) throw new Error("No owned remote return socket was reserved.");
-    const transport = spawn("ssh", [...sshOptions, "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-N", "-R", `${reservation.socket}:${localSocket}`, move.host], { stdio: ["ignore", "ignore", "inherit"] });
+  async function startTunnel(): Promise<void> {
+    const windows = move.remotePlatform === "win32";
+    if (!windows && !reservation) throw new Error("No owned remote return socket was reserved.");
+    const previousPort = windows && reservation ? Number(reservation.socket.slice("tcp://127.0.0.1:".length)) : 0;
+    const dynamic = windows && !previousPort;
+    const listen = windows ? `127.0.0.1:${previousPort}` : reservation!.socket;
+    const transport = spawn("ssh", [...sshOptions, "-v", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-N", "-R", `${listen}:${localSocket}`, move.host], { stdio: ["ignore", "ignore", "pipe"] });
     tunnel = transport;
     transport.once("error", (error) => { console.error(`Teleport return channel unavailable: ${error.message}`); });
     transport.once("close", () => {
@@ -391,6 +421,8 @@ async function controller(config: string): Promise<void> {
       // Channel loss does not establish that the destination failed to start.
       reconnectTunnel();
     });
+    const port = await waitForForward(transport, dynamic);
+    if (dynamic) reservation = { dir: "", socket: `tcp://127.0.0.1:${port}` };
   }
   function cleanup(): void {
     if (closed) return;
@@ -399,15 +431,16 @@ async function controller(config: string): Promise<void> {
     if (reconnectTimer) clearTimeout(reconnectTimer);
     server.close();
     tunnel?.kill("SIGTERM");
-    if (reservation) {
+    if (reservation && move.remotePlatform !== "win32") {
       void remoteEndpoint(move, "cleanup-socket", reservation).catch((error) => console.error(String(error)));
     }
     rmSync(localDir, { recursive: true, force: true });
   }
   try {
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(localSocket, resolve); });
-    reservation = await remoteEndpoint<{ dir: string; socket: string }>(move, "reserve", {});
-    startTunnel();
+    if (move.remotePlatform !== "win32") reservation = await remoteEndpoint<{ dir: string; socket: string }>(move, "reserve", {});
+    await startTunnel();
+    if (!reservation) throw new Error("SSH did not reserve a return channel.");
     const source = qualifyLocation(move.sourceCwd, move.state.machine);
     const target = qualifyLocation(move.path, move.host);
     const state = structuredClone(move.state);
@@ -415,7 +448,9 @@ async function controller(config: string): Promise<void> {
     state.returnRoute = { socket: reservation.socket, token, operationId: move.id, previous: source };
     stageAttempted = true;
     const remoteConnection = move.herdr.backend === "app"
-      ? { ...move.remoteCore, ...connection(move.remoteSession), backend: "app" as const, appMachine: move.machine, appRoute: { socket: reservation.socket, token, operationId: move.id } }
+      ? move.desktop
+        ? { ...move.remoteCore, ...connection(move.remoteSession), backend: "app" as const }
+        : { ...move.remoteCore, ...connection(move.remoteSession), backend: "app" as const, appMachine: move.machine, appRoute: { socket: reservation.socket, token, operationId: move.id } }
       : connection(move.remoteSession);
     outward = await remoteEndpoint<Prepared>(move, "stage", {
       operationId: move.id, sessionId: move.sessionId, sessionText: move.sessionText, path: move.path, sessionName: move.sessionName,
@@ -478,8 +513,16 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
     try {
       const content = readFileSync(0, "utf8");
       if (Buffer.byteLength(content) > MAX_PACKET) throw new Error("Teleport transfer exceeds 64 MiB.");
-      const result = endpoint(process.argv[3], JSON.parse(content));
-      process.stdout.write(JSON.stringify({ ok: true, result }));
+      const input = JSON.parse(content);
+      if (process.argv[3] === "retire-desktop") {
+        retireDesktopSource(input).then(
+          () => process.stdout.write(JSON.stringify({ ok: true, result: { retired: true } })),
+          (error) => { process.stdout.write(JSON.stringify({ ok: false, error: String(error) })); process.exitCode = 1; },
+        );
+      } else {
+        const result = endpoint(process.argv[3], input);
+        process.stdout.write(JSON.stringify({ ok: true, result }));
+      }
     } catch (error) { process.stdout.write(JSON.stringify({ ok: false, uncertain: error instanceof UnknownRemoteOutcome, error: error instanceof Error ? error.message : String(error) })); process.exitCode = 1; }
   } else if (process.argv[2] === "cleanup-app") {
     const config = process.argv[3];

@@ -1,13 +1,14 @@
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
-import { dirname, join, resolve, win32 } from "node:path";
+import { dirname, join, posix, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TeleportState } from "./core.ts";
 import { runCore, type HerdrContext } from "./herdr.ts";
 import type { TeleportExecution } from "./output.ts";
+import { discoverAppDesktop } from "./app.ts";
 
 const sourceDir = dirname(fileURLToPath(import.meta.url));
 export const extensionFile = join(sourceDir, "index.ts");
@@ -33,7 +34,7 @@ export type RemoteMove = {
   sessionId: string; sessionText: string; sessionName?: string; state: TeleportState; execution: TeleportExecution;
   sourceCwd: string; sourceSession: string; sourcePid: number; stateDir: string; herdr: HerdrContext;
   fingerprint: string; remoteWorker: string; remoteAgentDir: string; localVersion: string; remoteVersion: string;
-  localCommand?: string[]; remoteCommand?: string[]; remoteCore?: HerdrContext;
+  localCommand?: string[]; remoteCommand?: string[]; remoteCore?: HerdrContext; remotePlatform?: NodeJS.Platform; desktop?: boolean;
 };
 
 /** Resolve local paths or a trusted OpenSSH alias with an absolute remote path. */
@@ -42,21 +43,30 @@ export function parseTarget(value: string, cwd: string, currentMachine?: string)
   if (!value.includes("://")) return { path: resolve(cwd, value) };
   const match = /^ssh:\/\/((?:[A-Za-z0-9][A-Za-z0-9_.-]*@)?[A-Za-z0-9][A-Za-z0-9_.-]*)(\/.*)$/.exec(value);
   if (!match || match[2] === "/") throw new Error("Use ssh://SSH_ALIAS/absolute/directory. Put ports and connection options in OpenSSH config.");
-  const path = resolve("/", match[2]);
+  const path = /^\/[A-Za-z]:\//.test(match[2]) ? win32.normalize(match[2].slice(1)).replaceAll("\\", "/") : posix.resolve("/", match[2]);
   return match[1] === currentMachine ? { path } : { host: match[1], path };
 }
 
 /** Include machine identity without mistaking remote paths for local files. */
-export function qualifyLocation(path: string, machine?: string): string { return machine ? `ssh://${machine}${path}` : path; }
+export function qualifyLocation(path: string, machine?: string): string {
+  if (!machine) return path;
+  const remote = /^[A-Za-z]:[\\/]/.test(path) ? `/${path.replaceAll("\\", "/")}` : path;
+  return `ssh://${machine}${remote}`;
+}
 /** Quote exactly one argument for the remote login shell. */
 export function shellQuote(value: string): string { return `'${value.replaceAll("'", `'\\''`)}'`; }
 /** Locate the current host's agent directory without copying controller settings. */
 export function agentDirectory(): string { return process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"); }
+/** Normalize checkout line endings while detecting executable content changes. */
+export function fingerprintFiles(files: Array<{ name: string; content: string }>): string {
+  const hash = createHash("sha256");
+  for (const file of files) hash.update(file.name).update(file.content.replaceAll("\r\n", "\n"));
+  return hash.digest("hex");
+}
+
 /** Fingerprint executable Teleport files, not Pi or unrelated extensions. */
 export function runtimeFingerprint(): string {
-  const hash = createHash("sha256");
-  for (const name of ["index.ts", "core.ts", "herdr.ts", "app.ts", "process-info.ps1", "readiness.ts", "remote.ts", "bridge.ts", "output.ts"]) hash.update(name).update(readFileSync(join(sourceDir, name)));
-  return hash.digest("hex");
+  return fingerprintFiles(["index.ts", "core.ts", "herdr.ts", "app.ts", "process-info.ps1", "readiness.ts", "remote.ts", "bridge.ts", "output.ts"].map((name) => ({ name, content: readFileSync(join(sourceDir, name), "utf8") })));
 }
 
 /** Preserve every conversation entry and the session ID while relocating its header. */
@@ -90,7 +100,9 @@ export function requestController(route: Pick<ReturnRoute, "socket" | "token">, 
   return new Promise((resolve, reject) => {
     const message = `${JSON.stringify({ ...payload, token: route.token })}\n`;
     if (Buffer.byteLength(message) > MAX_PACKET) { reject(new Error("Teleport session exceeds the 64 MiB transfer limit.")); return; }
-    const socket = createConnection(route.socket);
+    const tcp = /^tcp:\/\/127\.0\.0\.1:([1-9]\d{0,4})$/.exec(route.socket);
+    if (route.socket.startsWith("tcp://") && (!tcp || Number(tcp[1]) > 65535)) { reject(new Error("Invalid Teleport loopback channel.")); return; }
+    const socket = tcp ? createConnection({ host: "127.0.0.1", port: Number(tcp[1]) }) : createConnection(route.socket);
     let content = "";
     let submitted = false;
     socket.setEncoding("utf8");
@@ -145,24 +157,86 @@ export async function waitForReceipt(path: string): Promise<any> {
 /** Fail closed on SSH authentication or host-key trust; never forward an SSH agent. */
 export const sshOptions = ["-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ForwardAgent=no", "-o", "ConnectTimeout=10"];
 
+/** Wait for OpenSSH's forward confirmation before submitting an arrival. */
+export function waitForForward(child: ChildProcess, dynamic: boolean): Promise<number | undefined> {
+  return new Promise((resolve, reject) => {
+    if (!child.stderr) { reject(new Error("SSH return channel has no confirmation stream.")); return; }
+    let output = "";
+    const stream = child.stderr;
+    const finish = (error?: Error, port?: number) => {
+      clearTimeout(timer);
+      stream.off("data", data);
+      stream.resume();
+      child.off("error", failed);
+      child.off("close", closed);
+      if (error) reject(error); else resolve(port);
+    };
+    const failed = (error: Error) => finish(error);
+    const closed = () => finish(new Error("SSH return channel closed before forwarding was confirmed."));
+    const data = (chunk: Buffer) => {
+      output = (output + chunk.toString()).slice(-65536);
+      const allocated = /Allocated port ([0-9]+) for remote forward/.exec(output);
+      if (dynamic && allocated) {
+        const port = Number(allocated[1]);
+        if (port > 0 && port <= 65535) finish(undefined, port);
+        else finish(new Error("SSH returned an invalid forwarding port."));
+      } else if (!dynamic && output.includes("remote forward success for:")) finish();
+    };
+    const timer = setTimeout(() => { child.kill(); finish(new Error("SSH did not confirm its return forward.")); }, 30_000);
+    stream.on("data", data);
+    child.once("error", failed);
+    child.once("close", closed);
+  });
+}
+
+/** Encode the entire program so POSIX shells, PowerShell and cmd receive the same command. */
+export function remoteNodeCommand(script: string): string {
+  return `node -e "eval(Buffer.from('${Buffer.from(script).toString("base64")}','base64').toString())"`;
+}
+
+/** Validate paths using the operating system that produced them. */
+export function validProbe(probe: any, fingerprint: string): boolean {
+  const absolute = probe?.platform === "win32" ? win32.isAbsolute : posix.isAbsolute;
+  return probe?.fingerprint === fingerprint && typeof probe.worker === "string" && absolute(probe.worker) && typeof probe.agentDir === "string" && absolute(probe.agentDir);
+}
+
 /** Probe the remote configured Pi runtime without starting a model or changing its installation. */
-export function probeRemote(host: string, path: string, expectedFingerprint: string): { fingerprint: string; worker: string; agentDir: string; version: string; command: string[]; core: HerdrContext } {
+export function probeRemote(host: string, path: string, expectedFingerprint: string): { fingerprint: string; worker: string; agentDir: string; version: string; command: string[]; core: HerdrContext; platform: NodeJS.Platform } {
   const nonce = randomUUID();
   const prefix = `PI_TELEPORT_PROBE:${nonce}:`;
-  const output = execFileSync("ssh", [...sshOptions, host, `cd ${shellQuote(path)} && PI_TELEPORT_PROBE=${shellQuote(nonce)} pi --approve --help`], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  const config = JSON.stringify({ path, nonce });
+  const program = `const cfg=${config};
+const {spawn,spawnSync}=require('node:child_process');
+const windows=process.platform==='win32';
+const child=spawn(windows?(process.env.ComSpec||'cmd.exe'):'pi',windows?['/d','/s','/c','pi.cmd --approve --help']:['--approve','--help'],{cwd:cfg.path,env:{...process.env,PI_TELEPORT_PROBE:cfg.nonce},stdio:['ignore','pipe','pipe'],windowsHide:true});
+child.stdout.pipe(process.stdout);child.stderr.pipe(process.stderr);
+const timer=setTimeout(()=>{if(windows&&child.pid)spawnSync('taskkill',['/pid',String(child.pid),'/t','/f'],{stdio:'ignore'});else child.kill('SIGKILL');},180000);
+child.on('error',error=>{clearTimeout(timer);console.error(error);process.exitCode=1});
+child.on('close',code=>{clearTimeout(timer);process.exitCode=code??1});`;
+  let output: string;
+  try {
+    output = execFileSync("ssh", [...sshOptions, host, remoteNodeCommand(program)], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024, timeout: 195_000, stdio: ["ignore", "pipe", "pipe"] });
+  } catch (error) {
+    const cause = error as { code?: string | number; killed?: boolean };
+    throw new Error(`Pi could not complete its startup probe on ${host}${cause.killed ? " within three minutes" : ""}. Check Pi and the destination directory; the source is unchanged.`);
+  }
   const probes = output.split("\n").filter((line) => line.startsWith(prefix)).map((line) => JSON.parse(line.slice(prefix.length)));
-  if (probes.length !== 1 || probes[0].fingerprint !== expectedFingerprint || (!probes[0].worker?.startsWith("/") || !probes[0].agentDir?.startsWith("/"))) {
+  if (probes.length !== 1 || !validProbe(probes[0], expectedFingerprint)) {
     throw new Error(`Install or update Teleport on ${host} to this implementation, then retry. A usable current Teleport is required for the return journey. The source is unchanged.`);
   }
   return probes[0];
 }
 
 /** Resolve one configured SSH profile without using UI focus. */
-export function remoteMachine(host: string, context?: HerdrContext): { machine: string; remoteSession: string } {
+export function remoteMachine(host: string, context?: HerdrContext): { machine: string; remoteSession: string; desktop?: boolean; sourceContext?: HerdrContext } {
   if (context?.backend === "app") {
     const profiles = runCore(context, ["machine", "ls", "--json"]).machines;
     if (!Array.isArray(profiles)) throw new Error("Core returned no machine profiles.");
     const matches = profiles.filter((profile: any) => profile.target === host && !profile.via && !profile.temporary);
+    if (matches.length === 0) {
+      const sourceContext = discoverAppDesktop(context, host);
+      if (sourceContext) return { machine: "", remoteSession: sourceContext.appSsh?.target === host ? sourceContext.appSsh.session || "default" : "default", desktop: true, sourceContext };
+    }
     if (matches.length !== 1 || typeof matches[0].name !== "string" || !matches[0].name || matches[0].name.includes("/") || (matches[0].session != null && typeof matches[0].session !== "string")) throw new Error(`Configure one persistent direct SSH core machine for ${host} before teleporting.`);
     return { machine: matches[0].name, remoteSession: matches[0].session || "default" };
   }
