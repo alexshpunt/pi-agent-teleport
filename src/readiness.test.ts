@@ -111,7 +111,7 @@ describe("Herdr arrival readiness", () => {
     vi.useFakeTimers();
     try {
       process.argv = [process.execPath, script];
-      outcome = preflightSession({ target: dir, sessionText: JSON.stringify({ type: "session", version: 3, id: "fixture-session", cwd: dir }) + "\n" });
+      outcome = preflightSession({ target: dir, expectedModel: { provider: "test", id: "model" }, sessionText: JSON.stringify({ type: "session", version: 3, id: "fixture-session", cwd: dir }) + "\n" });
       process.argv = argv;
       outcome.then(() => { settled = true; }, () => { settled = true; });
       for (let attempt = 0; !existsSync(started) && attempt < 100; attempt++) await delay(10);

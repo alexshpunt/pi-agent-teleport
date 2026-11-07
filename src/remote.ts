@@ -24,6 +24,7 @@ export function piCommand(): string[] {
 /** An unconfirmed commit must leave the source idle, not launch a competing continuation. */
 export class UnknownRemoteOutcome extends Error {}
 
+export type ModelIdentity = { provider: string; id: string };
 /** A private return channel, carried only in Teleport's mode-0600 state. */
 export type ReturnRoute = { socket: string; token: string; operationId: string; previous: string };
 /** A destination's exact persisted session and native Herdr pane. */
@@ -34,7 +35,7 @@ export type RemoteMove = {
   sessionId: string; sessionText: string; sessionName?: string; state: TeleportState; execution: TeleportExecution;
   sourceCwd: string; sourceSession: string; sourcePid: number; stateDir: string; herdr: HerdrContext;
   fingerprint: string; remoteWorker: string; remoteAgentDir: string; localVersion: string; remoteVersion: string;
-  localCommand?: string[]; remoteCommand?: string[]; remoteCore?: HerdrContext; remotePlatform?: NodeJS.Platform; desktop?: boolean;
+  localCommand?: string[]; remoteCommand?: string[]; remoteCore?: HerdrContext; remotePlatform?: NodeJS.Platform; desktop?: boolean; expectedModel: ModelIdentity;
 };
 
 /** Resolve local paths or a trusted OpenSSH alias with an absolute remote path. */

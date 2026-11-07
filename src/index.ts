@@ -86,9 +86,10 @@ export default function teleport(pi: ExtensionAPI) {
   }
 
   /** Describe why this Pi process cannot continue a teleported session, or undefined when it can. */
-  async function destinationProblem(ctx: ExtensionContext): Promise<string | undefined> {
+  async function destinationProblem(ctx: ExtensionContext, expected?: { provider: string; id: string }): Promise<string | undefined> {
     try {
-      if (!ctx.model) return "No model is selected at the destination. Configure a default model there before retrying.";
+      if (!expected?.provider || !expected.id) return "The source model identity is missing. Keep the source session and retry with a selected model.";
+      if (!ctx.model || ctx.model.provider !== expected.provider || ctx.model.id !== expected.id) return `The destination cannot restore ${expected.provider}/${expected.id}. Configure this exact model and its authentication there before retrying.`;
       const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
       if (!auth.ok) return `Authentication is unavailable for ${ctx.model.provider}/${ctx.model.id} at the destination: ${auth.error}. Configure it there before retrying.`;
       const selected = pi.getAllTools().find((tool) => tool.name === "teleport");
@@ -96,10 +97,14 @@ export default function teleport(pi: ExtensionAPI) {
     } catch (error) { return error instanceof Error ? error.message : String(error); }
   }
 
+  function selectedModel(ctx: ExtensionContext): { provider: string; id: string } {
+    if (!ctx.model?.provider || !ctx.model.id) throw new Error("Select a model before teleporting; the source has not moved.");
+    return { provider: ctx.model.provider, id: ctx.model.id };
+  }
   /** Start a separate Pi at the destination with a copy of this session; throw its exact failure. */
   async function checkDestination(ctx: ExtensionCommandContext, target: string): Promise<void> {
     ctx.ui.setStatus("teleport-check", `Teleport · checking that Pi starts in ${target}`);
-    try { await preflightSession({ target, sessionText: snapshot(ctx).sessionText }); }
+    try { await preflightSession({ target, sessionText: snapshot(ctx).sessionText, expectedModel: selectedModel(ctx) }); }
     finally { ctx.ui.setStatus("teleport-check", undefined); }
   }
 
@@ -119,7 +124,7 @@ export default function teleport(pi: ExtensionAPI) {
     const remote = probeRemote(host, path, implementation);
     const id = randomUUID();
     const state = readState(dir);
-    const move = { id, host, path, ...profile, sourceCwd: ctx.cwd, sourceSession: source, sourcePid: process.pid, sessionText, sessionId, execution, sessionName: ctx.sessionManager.getSessionName(), state, stateDir: dir, herdr, fingerprint: implementation, remoteWorker: remote.worker, remoteAgentDir: remote.agentDir, localVersion: VERSION, remoteVersion: remote.version, localCommand: piCommand(), remoteCommand: remote.command, remoteCore: remote.core, remotePlatform: remote.platform };
+    const move = { id, host, path, ...profile, sourceCwd: ctx.cwd, sourceSession: source, sourcePid: process.pid, sessionText, sessionId, execution, sessionName: ctx.sessionManager.getSessionName(), state, stateDir: dir, herdr, fingerprint: implementation, remoteWorker: remote.worker, remoteAgentDir: remote.agentDir, localVersion: VERSION, remoteVersion: remote.version, localCommand: piCommand(), remoteCommand: remote.command, remoteCore: remote.core, remotePlatform: remote.platform, expectedModel: selectedModel(ctx) };
     state.pendingRemote = { id, receipt: join(dir, "bridges", id, "result.json") };
     writeState(dir, state);
     // Keep the captured source state independent from the in-flight marker.
@@ -153,7 +158,7 @@ export default function teleport(pi: ExtensionAPI) {
     writeState(dir, state);
     let result: unknown;
     try {
-      result = await requestController(state.returnRoute, { action: "return", operationId: state.returnRoute.operationId, sessionText, execution, state, cwd: ctx.cwd, sourcePid: process.pid, sessionName: ctx.sessionManager.getSessionName() });
+      result = await requestController(state.returnRoute, { action: "return", operationId: state.returnRoute.operationId, sessionText, execution, state, cwd: ctx.cwd, sourcePid: process.pid, expectedModel: selectedModel(ctx), sessionName: ctx.sessionManager.getSessionName() });
     } catch (error) {
       const uncertain = error instanceof UnknownRemoteOutcome;
       try { writeFileSync(receipt, JSON.stringify({ ok: false, uncertain, error: String(error) }), { mode: 0o600 }); } catch { /* The persisted pending marker still fences this source. */ }
@@ -193,7 +198,7 @@ export default function teleport(pi: ExtensionAPI) {
         const resource = Object.values(state.resources).find((resource) => resource.machine === state.machine && resource.path === target);
         prepared = prepareHerdrDestination(context, target, resource?.herdr, ctx.sessionManager.getSessionName());
         const location = prepared.location;
-        const continuation = Buffer.from(JSON.stringify({ execution, from: qualifyLocation(sourceCwd, state.machine), to: qualifyLocation(target, state.machine), receipt }), "utf8").toString("base64url");
+        const continuation = Buffer.from(JSON.stringify({ execution, from: qualifyLocation(sourceCwd, state.machine), to: qualifyLocation(target, state.machine), receipt, expectedModel: selectedModel(ctx) }), "utf8").toString("base64url");
         runHerdr(context, ["pane", "run", location.paneId, guardedLaunch([...(context.backend === "app" || process.platform === "win32" ? piCommand() : ["pi"]), "--approve", "--session", destination], receipt, { PI_CODING_AGENT_DIR: agentDirectory(), PI_TELEPORT_CONTINUATION: continuation, PI_TELEPORT_APP_CONTEXT: process.env.PI_TELEPORT_APP_CONTEXT || "" })]);
         // The destination stays gated until this commit; the source retires only after its own readiness verdict.
         await awaitHerdrArrival(context, location.paneId, destination, receipt);
@@ -439,7 +444,9 @@ export default function teleport(pi: ExtensionAPI) {
     if (preflight) {
       // A disposable check process: report the verdict and touch no Teleport state.
       delete process.env.PI_TELEPORT_PREFLIGHT;
-      const problem = await destinationProblem(ctx);
+      const expected = process.env.PI_TELEPORT_EXPECTED_MODEL ? JSON.parse(process.env.PI_TELEPORT_EXPECTED_MODEL) : undefined;
+      delete process.env.PI_TELEPORT_EXPECTED_MODEL;
+      const problem = await destinationProblem(ctx, expected);
       writeReadiness(preflight, problem ? { ok: false, error: problem } : { ok: true, pid: process.pid, cwd: realpathSync(process.cwd()), sessionFile: ctx.sessionManager.getSessionFile() ?? "" });
       return;
     }
@@ -455,7 +462,7 @@ export default function teleport(pi: ExtensionAPI) {
         if (!arrivalExecution || !ownsExecution(ctx, arrivalExecution)) throw new Error("Teleport arrival does not own an execution on this session branch.");
         herdr = getHerdrContext();
         if (!herdr) throw new Error("Destination Pi is not running in its own native Herdr pane.");
-        const problem = await destinationProblem(ctx);
+        const problem = await destinationProblem(ctx, handoff.expectedModel);
         if (problem) throw new Error(problem);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -482,13 +489,13 @@ export default function teleport(pi: ExtensionAPI) {
     // The source process owns the pending handoff. Report readiness, then do not
     // reconcile or start another turn until the source commits this destination.
     if (encodedContinuation) {
-      const { receipt } = JSON.parse(Buffer.from(encodedContinuation, "base64url").toString("utf8")) as { receipt?: string };
+      const { receipt, expectedModel } = JSON.parse(Buffer.from(encodedContinuation, "base64url").toString("utf8")) as { receipt?: string; expectedModel?: { provider: string; id: string } };
       const closeArrival = (message: string) => {
         delete process.env.PI_TELEPORT_CONTINUATION;
         ctx.ui.notify(`Teleport arrival not committed: ${message}`, "error");
         ctx.shutdown();
       };
-      const problem = await destinationProblem(ctx);
+      const problem = await destinationProblem(ctx, expectedModel);
       try {
         if (receipt) writeReadiness(receipt, problem ? { ok: false, error: problem } : { ok: true, pid: process.pid, cwd: realpathSync(process.cwd()), sessionFile: ctx.sessionManager.getSessionFile() ?? "" });
       } catch (error) { closeArrival(`Could not report readiness: ${String(error)}`); return; }

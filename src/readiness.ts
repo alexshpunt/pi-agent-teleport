@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "@earendil-works/pi-coding-agent";
 import { readHerdrPane, runHerdr, shellOwnsForeground, withOutput, type HerdrContext } from "./herdr.ts";
-import { hasSessionProcess, piCommand } from "./remote.ts";
+import { hasSessionProcess, piCommand, type ModelIdentity } from "./remote.ts";
 
 /** A destination Pi's own verdict on whether it can continue the session. */
 export type Readiness = { ok: true; pid: number; cwd: string; sessionFile: string } | { ok: false; error: string };
@@ -85,14 +85,14 @@ function tail(text: string, limit = 16_384): string { return text.length > limit
  * The copy gets its own session ID, so other extensions never see a second live owner.
  * Throws the destination's exact failure; nothing in the current process changes.
  */
-export async function preflightSession(input: { target: string; sessionText: string }): Promise<void> {
+export async function preflightSession(input: { target: string; sessionText: string; expectedModel: ModelIdentity }): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), "pi-teleport-preflight-"));
   try {
     const [header, ...entries] = input.sessionText.trimEnd().split("\n");
     const session = join(dir, "session.jsonl");
     writeFileSync(session, `${[JSON.stringify({ ...JSON.parse(header), id: randomUUID(), cwd: input.target }), ...entries].join("\n")}\n`, { mode: 0o600 });
     const receipt = join(dir, "ready.json");
-    const env: NodeJS.ProcessEnv = { ...process.env, PI_TELEPORT_PREFLIGHT: receipt };
+    const env: NodeJS.ProcessEnv = { ...process.env, PI_TELEPORT_PREFLIGHT: receipt, PI_TELEPORT_EXPECTED_MODEL: JSON.stringify(input.expectedModel) };
     // The check must not register as an agent in the caller's terminal or join a handoff.
     for (const name of Object.keys(env)) if (name.startsWith("HERDR_") || name.startsWith("HC_") || name === "PI_TELEPORT_CONTINUATION" || name === "PI_TELEPORT_HANDOFF") delete env[name];
     const [command, ...prefix] = piCommand();

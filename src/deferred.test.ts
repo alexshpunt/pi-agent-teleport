@@ -26,6 +26,7 @@ async function fixture() {
   let command = "";
   const messages: any[] = [];
   const ctx = {
+    model: { provider: "test", id: "model" },
     cwd: root,
     sessionManager: { getSessionId: () => header.id, getHeader: () => header, getSessionFile: () => file, getSessionName: () => undefined, getEntries: () => entries, getBranch: () => entries },
     ui: { notify: vi.fn(), setStatus: vi.fn() }, isIdle: () => true, switchSession: vi.fn(async () => ({ cancelled: true })), shutdown: vi.fn(),
