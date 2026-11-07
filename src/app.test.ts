@@ -31,6 +31,21 @@ test("App machine discovery consumes native profile names and sessions, not lega
   expect(calls()).toEqual([["hc", ["machine", "ls", "--json"]]]);
 });
 
+test("a WSL App session identifies its Windows desktop from its exact workspace, tab and terminal", () => {
+  vi.mocked(execFileSync)
+    .mockReturnValueOnce(JSON.stringify({ machines: [] }))
+    .mockReturnValueOnce(JSON.stringify({ spaces: [{ machine: "wsl", id: "wsl/sp3", tabs: [{ id: "wsl/tb4", terminals: [{ terminal: "wsl/t7", pane: "wsl/pane" }] }] }] }));
+  const result = remoteMachine("desktop-ssh", app);
+  expect(result).toMatchObject({ machine: "", remoteSession: "default", desktop: true, sourceContext: { appMachine: "wsl", appSsh: { target: "desktop-ssh" } } });
+});
+
+test("a desktop cannot claim a source with a mismatched terminal", () => {
+  vi.mocked(execFileSync)
+    .mockReturnValueOnce(JSON.stringify({ machines: [] }))
+    .mockReturnValueOnce(JSON.stringify({ spaces: [{ machine: "wsl", id: "wsl/sp3", tabs: [{ id: "wsl/tb4", terminals: [{ terminal: "wsl/t8", pane: "wsl/pane" }] }] }] }));
+  expect(() => remoteMachine("desktop-ssh", app)).toThrow();
+});
+
 test("the authenticated App proxy permits only UI commands addressed to its remote machine", () => {
   vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ ok: true }));
   const own = ["do", "tab.rename", JSON.stringify({ id: "worker/tb4", name: "session" })];
