@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { release } from "node:os";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { shellQuote } from "./remote.ts";
-import { parkAppTerminal, runAppOperation } from "./app.ts";
+import { discoverWslAppDesktop, parkAppTerminal, runAppOperation } from "./app.ts";
 
 /** Encode a script so the receiving Windows shell never parses paths or handoff JSON. */
 export function powershellCommand(script: string): string {
@@ -38,13 +39,26 @@ export function guardedLaunch(argv: string[], receipt: string, env: Record<strin
 }
 
 /** Caller IDs and the CLI connection that owns them. */
-export type HerdrContext = { workspaceId: string; tabId: string; paneId: string; session: string; socketPath?: string; backend?: "app"; stateHome?: string; configHome?: string; runtimeDir?: string; appHome?: string; appCli?: string; appMachine?: string; appRoute?: { socket: string; token: string; operationId: string }; appSsh?: { target: string; session?: string; stateHome?: string; configHome?: string; runtimeDir?: string; appHome?: string; appCli?: string; coreSocketPath?: string }; coreSocketPath?: string };
+export type HerdrContext = { workspaceId: string; tabId: string; paneId: string; session: string; socketPath?: string; backend?: "app"; stateHome?: string; configHome?: string; runtimeDir?: string; appHome?: string; appCli?: string; appMachine?: string; appWindowsInterop?: boolean; appRoute?: { socket: string; token: string; operationId: string }; appSsh?: { target: string; session?: string; stateHome?: string; configHome?: string; runtimeDir?: string; appHome?: string; appCli?: string; coreSocketPath?: string }; coreSocketPath?: string };
 /** A workspace and its initial shell, recorded with the owning connection. */
 export type HerdrLocation = HerdrContext;
 
 /** Capture native routing without inventing caller IDs, including during an SSH probe. */
 export function appConnection(session = process.env.HC_SESSION || "default", env: NodeJS.ProcessEnv = process.env): HerdrContext {
   return { backend: "app", paneId: "", workspaceId: "", tabId: "", session, stateHome: env.XDG_STATE_HOME, configHome: env.XDG_CONFIG_HOME, runtimeDir: env.XDG_RUNTIME_DIR, appHome: env.HERDR_APP_HOME, appCli: env.PI_HERDR_APP_CLI, coreSocketPath: env.HC_TERMINAL_SOCKET || env.HC_SOCKET };
+}
+
+/** Locate the Windows App for a WSL terminal without relying on the focused window. */
+function wslAppContext(context: HerdrContext): HerdrContext {
+  const where = "/mnt/c/Windows/System32/where.exe";
+  if (process.platform !== "linux" || !release().toLowerCase().includes("microsoft") || !existsSync(where) || context.appCli) return context;
+  let executable: string;
+  try {
+    const windows = execFileSync(where, ["herdr-app.exe"], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }).split(/\r?\n/).find((line) => line.trim());
+    if (!windows) return context;
+    executable = execFileSync("wslpath", ["-u", windows.trim()], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch { return context; }
+  return discoverWslAppDesktop(context, executable) || context;
 }
 
 /** Enable Herdr only inside a fully identified managed pane. */
@@ -64,7 +78,8 @@ export function getHerdrContext(env: NodeJS.ProcessEnv = process.env): HerdrCont
     }
     const terminal = runCore(context, ["get", context.paneId]);
     if (terminal.address !== context.paneId || terminal.state !== "live" || !terminal.labels?.["herdr.space"] || !terminal.labels?.["herdr.tab"]) throw new Error("This core terminal has no verified Herdr App space and tab.");
-    return { ...context, workspaceId: terminal.labels["herdr.space"], tabId: terminal.labels["herdr.tab"] };
+    const source = { ...context, workspaceId: terminal.labels["herdr.space"], tabId: terminal.labels["herdr.tab"] };
+    return env === process.env && !source.appRoute && !source.appSsh ? wslAppContext(source) : source;
   }
   if (env.HERDR_ENV !== "1" || !env.HERDR_WORKSPACE_ID?.trim() || !env.HERDR_TAB_ID?.trim() || !env.HERDR_PANE_ID?.trim()) return;
   return { workspaceId: env.HERDR_WORKSPACE_ID, tabId: env.HERDR_TAB_ID, paneId: env.HERDR_PANE_ID, session: env.HERDR_SESSION || "default", ...(env.HERDR_SOCKET_PATH ? { socketPath: env.HERDR_SOCKET_PATH } : {}) };
@@ -138,7 +153,7 @@ export function assertHerdrContext(context: HerdrContext): void {
 
 /** Compare connections before using a persisted Herdr handle. */
 export function sameHerdrConnection(a: HerdrContext, b: HerdrContext): boolean {
-  return a.backend === b.backend && a.socketPath === b.socketPath && a.session === b.session && a.stateHome === b.stateHome && a.configHome === b.configHome && a.runtimeDir === b.runtimeDir && a.appHome === b.appHome && a.appCli === b.appCli && a.appMachine === b.appMachine && a.appSsh?.target === b.appSsh?.target && a.appSsh?.session === b.appSsh?.session && a.appSsh?.appHome === b.appSsh?.appHome && a.appSsh?.stateHome === b.appSsh?.stateHome && a.appSsh?.configHome === b.appSsh?.configHome && a.appSsh?.runtimeDir === b.appSsh?.runtimeDir && a.appSsh?.coreSocketPath === b.appSsh?.coreSocketPath && a.appSsh?.appCli === b.appSsh?.appCli && a.coreSocketPath === b.coreSocketPath;
+  return a.backend === b.backend && a.socketPath === b.socketPath && a.session === b.session && a.stateHome === b.stateHome && a.configHome === b.configHome && a.runtimeDir === b.runtimeDir && a.appHome === b.appHome && a.appCli === b.appCli && a.appWindowsInterop === b.appWindowsInterop && a.appMachine === b.appMachine && a.appSsh?.target === b.appSsh?.target && a.appSsh?.session === b.appSsh?.session && a.appSsh?.appHome === b.appSsh?.appHome && a.appSsh?.stateHome === b.appSsh?.stateHome && a.appSsh?.configHome === b.appSsh?.configHome && a.appSsh?.runtimeDir === b.appSsh?.runtimeDir && a.appSsh?.coreSocketPath === b.appSsh?.coreSocketPath && a.appSsh?.appCli === b.appSsh?.appCli && a.coreSocketPath === b.coreSocketPath;
 }
 
 /** Read IDs from a creation/open response and verify its checkout path. */

@@ -47,7 +47,11 @@ catch(error){if(error.stdout)process.stdout.write(error.stdout);if(error.stderr)
       const encoded = Buffer.from(script).toString("base64");
       output = execFileSync("ssh", [...sshOptions, route.target, `node -e "eval(Buffer.from('${encoded}','base64').toString())"`], { encoding: "utf8", timeout: 60_000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
     } else {
-      output = execFileSync(context.appCli || (process.platform === "win32" ? "herdr-app.exe" : "herdr-app"), args, { encoding: "utf8", env: coreEnvironment(context), timeout: 40_000, stdio: ["ignore", "pipe", "pipe"] });
+      const env = coreEnvironment(context);
+      if (context.appWindowsInterop) {
+        for (const key of ["HC_SOCKET", "HC_TERMINAL_SOCKET", "HC_TERMINAL_ID", "HC_SCOPE", "HC_SESSION", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "HERDR_APP_HOME"]) delete env[key];
+      }
+      output = execFileSync(context.appCli || (process.platform === "win32" ? "herdr-app.exe" : "herdr-app"), args, { encoding: "utf8", env, timeout: 40_000, stdio: ["ignore", "pipe", "pipe"] });
     }
   } catch (error) {
     const stdout = (error as { stdout?: Buffer | string }).stdout?.toString();
@@ -101,12 +105,26 @@ export function discoverAppDesktop(context: HerdrContext, target: string): Herdr
   const route = { target, ...(context.appSsh?.target === target && context.appSsh.session ? { session: context.appSsh.session } : {}) };
   const result = runApp({ ...context, appRoute: undefined, appSsh: route }, ["ls"]);
   if (!Array.isArray(result.spaces)) throw new Error("Herdr App returned no spaces.");
-  const matches = (result.spaces as AppSpace[]).filter((space) => {
+  const matches = matchingSourceSpaces(context, result.spaces);
+  if (matches.length !== 1 || (context.appMachine && context.appMachine !== matches[0].machine)) return;
+  return { ...context, appMachine: matches[0].machine!, ...(context.appRoute || context.appSsh ? {} : { appSsh: route }) };
+}
+
+function matchingSourceSpaces(context: HerdrContext, spaces: AppSpace[]): AppSpace[] {
+  return spaces.filter((space) => {
     const machine = space.machine;
     return typeof machine === "string" && !!machine && !machine.includes("/") && space.id === `${machine}/${context.workspaceId}` && Array.isArray(space.tabs) && space.tabs.some((tab) => tab.id === `${machine}/${context.tabId}` && Array.isArray(tab.terminals) && tab.terminals.some((terminal) => terminal.terminal === `${machine}/${context.paneId}`));
   });
+}
+
+/** Route WSL UI commands only after the Windows window proves ownership. */
+export function discoverWslAppDesktop(context: HerdrContext, appCli: string): HerdrContext | undefined {
+  const candidate: HerdrContext = { ...context, appCli, appWindowsInterop: true, appSsh: undefined, appRoute: undefined };
+  const result = runApp(candidate, ["ls"]);
+  if (!Array.isArray(result.spaces)) throw new Error("Herdr App returned no spaces.");
+  const matches = matchingSourceSpaces(context, result.spaces);
   if (matches.length !== 1 || (context.appMachine && context.appMachine !== matches[0].machine)) return;
-  return { ...context, appMachine: matches[0].machine!, ...(context.appRoute || context.appSsh ? {} : { appSsh: route }) };
+  return { ...candidate, appMachine: matches[0].machine! };
 }
 
 /** Negotiate with the running window, not potentially stale CLI metadata. */

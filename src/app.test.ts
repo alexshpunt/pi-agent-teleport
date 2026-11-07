@@ -1,7 +1,7 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { runHerdr } from "./herdr.ts";
-import { runAppProxy } from "./app.ts";
+import { discoverWslAppDesktop, runAppProxy } from "./app.ts";
 import { remoteMachine } from "./remote.ts";
 
 vi.mock("node:child_process", () => ({ execFileSync: vi.fn() }));
@@ -44,6 +44,15 @@ test("a desktop cannot claim a source with a mismatched terminal", () => {
     .mockReturnValueOnce(JSON.stringify({ machines: [] }))
     .mockReturnValueOnce(JSON.stringify({ spaces: [{ machine: "wsl", id: "wsl/sp3", tabs: [{ id: "wsl/tb4", terminals: [{ terminal: "wsl/t8", pane: "wsl/pane" }] }] }] }));
   expect(() => remoteMachine("desktop-ssh", app)).toThrow();
+});
+
+test("a WSL App terminal routes its local move to the Windows window's matching WSL machine", () => {
+  vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ spaces: [{ machine: "laptop-wsl", id: "laptop-wsl/sp3", tabs: [{ id: "laptop-wsl/tb4", terminals: [{ terminal: "laptop-wsl/t7", pane: "laptop-wsl/pane" }] }] }] }));
+  const context = discoverWslAppDesktop(app, "/mnt/c/Herdr/herdr-app.exe");
+  expect(context).toMatchObject({ appMachine: "laptop-wsl", appCli: "/mnt/c/Herdr/herdr-app.exe", appWindowsInterop: true });
+  const options = vi.mocked(execFileSync).mock.calls[0][2] as { env: NodeJS.ProcessEnv };
+  expect(options.env.HC_SOCKET).toBeUndefined();
+  expect(options.env.HC_TERMINAL_SOCKET).toBeUndefined();
 });
 
 test("the authenticated App proxy permits only UI commands addressed to its remote machine", () => {
