@@ -32,6 +32,23 @@ test("a startup probe rejects a different fallback model before declaring readin
 });
 
 
+test.each([
+  { available: true, ready: true },
+  { available: false, ready: false },
+])("the selected model requires its destination authentication ($available)", async ({ available, ready }) => {
+  const dir = mkdtempSync(join(tmpdir(), "teleport-model-auth-"));
+  const receipt = join(dir, "ready.json");
+  const events = new Map<string, Function>();
+  vi.stubEnv("PI_TELEPORT_PREFLIGHT", receipt);
+  vi.stubEnv("PI_TELEPORT_EXPECTED_MODEL", JSON.stringify({ provider: "anthropic", id: "claude-sonnet-5-5" }));
+  const ctx = { model: { provider: "anthropic", id: "claude-sonnet-5-5" }, modelRegistry: { getApiKeyAndHeaders: vi.fn().mockResolvedValue(available ? { ok: true, value: {} } : { ok: false, error: "unavailable" }) }, sessionManager: { getSessionFile: () => "/session" } };
+  try {
+    teleport({ on: (name: string, fn: Function) => events.set(name, fn), registerCommand: () => {}, registerTool: () => {}, registerEntryRenderer: () => {}, getAllTools: () => [{ name: "teleport", sourceInfo: { path: extensionFile } }] } as unknown as ExtensionAPI);
+    await events.get("resources_discover")!({}, ctx);
+    expect(JSON.parse(readFileSync(receipt, "utf8")).ok).toBe(ready);
+  } finally { vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("a remote arrival with a fallback model reports failure and shuts down without committing", async () => {
   const dir = mkdtempSync(join(tmpdir(), "teleport-model-arrival-"));
   const events = new Map<string, Function>();

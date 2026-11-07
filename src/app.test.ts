@@ -55,6 +55,11 @@ test("a WSL App terminal routes its local move to the Windows window's matching 
   expect(options.env.HC_TERMINAL_SOCKET).toBeUndefined();
 });
 
+test("WSL routing refuses a window whose terminal does not match the source", () => {
+  vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ spaces: [{ machine: "other", id: "other/sp3", tabs: [{ id: "other/tb4", terminals: [{ terminal: "other/t8", pane: "other/pane" }] }] }] }));
+  expect(discoverWslAppDesktop(app, "/mnt/c/Herdr/herdr-app.exe")).toBeUndefined();
+});
+
 test("the authenticated App proxy permits only UI commands addressed to its remote machine", () => {
   vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ ok: true }));
   const own = ["do", "tab.rename", JSON.stringify({ id: "worker/tb4", name: "session" })];
