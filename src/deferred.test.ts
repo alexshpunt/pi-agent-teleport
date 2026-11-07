@@ -47,7 +47,7 @@ async function fixture() {
     const receipt = await tool!.execute("root", { action: "jump", target }, undefined, undefined, ctx as any);
     await events.get("tool_execution_end")!({ toolCallId: "root" }, ctx);
     await events.get("agent_settled")!({}, ctx);
-    expect(receipt.content[0]).toMatchObject({ text: expect.stringContaining("queued") });
+    expect(receipt).toMatchObject({ details: { action: "jump", target, execution: { sessionId: "owned-session", toolCallId: "root", parentToolCallId: "root" } }, terminate: true });
     await commands.get("__teleport_internal").handler(command.split(" ")[1], ctx);
   }
   return { ctx, file, entries, messages, queue, stateDir: join(root, "agent", "teleport", header.id) };
@@ -56,7 +56,7 @@ async function fixture() {
 test.each([true, false])("an uncertain remote outcome keeps its fence and does not wake a competing model (%s)", async (uncertain) => {
   vi.mocked(getHerdrContext).mockReturnValue({ paneId: "pane", workspaceId: "workspace", tabId: "tab", session: "test" });
   vi.mocked(remoteMachine).mockReturnValue({ machine: "worker", remoteSession: "worker-session" });
-  vi.mocked(probeRemote).mockReturnValue({ fingerprint: "same", worker: "/remote/bridge.ts", agentDir: "/remote/agent", version: "1.3.0" });
+  vi.mocked(probeRemote).mockReturnValue({ fingerprint: "same", worker: "/remote/bridge.ts", agentDir: "/remote/agent", version: "1.3.0", command: ["/usr/bin/node", "/remote/pi.js"], core: { backend: "app", session: "worker-session", workspaceId: "", tabId: "", paneId: "" } });
   vi.mocked(startRemoteMove).mockRejectedValue(uncertain ? new UnknownRemoteOutcome("Inspect the commit receipt.") : new Error("Destination refused readiness."));
   const f = await fixture();
   await f.queue("ssh://worker/target");
