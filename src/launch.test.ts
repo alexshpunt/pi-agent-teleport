@@ -56,6 +56,21 @@ test.skipIf(!available)("Windows source cleanup closes the source pane before re
   expect(existsSync(session)).toBe(false);
 });
 
+const fishAvailable = spawnSync("fish", ["--version"], { timeout: 5_000 }).status === 0;
+test.skipIf(!fishAvailable)("launching through fish preserves nested quotes and shell metacharacters", () => {
+  const directory = mkdtempSync(join(tmpdir(), "teleport-fish-'"));
+  fixtures.push(directory);
+  const fixture = join(directory, "pi.mjs");
+  const output = join(directory, "args.json");
+  const receipt = join(directory, "ready.json");
+  const argument = "a'b \"$c\" & [] `literal` Вход";
+  writeFileSync(fixture, `import {writeFileSync} from "node:fs"; writeFileSync(process.argv[2], JSON.stringify({argv:process.argv.slice(3),value:process.env.LAUNCH_VALUE}));`);
+  const result = spawnSync("fish", ["-c", guardedLaunch([process.execPath, fixture, output, argument], receipt, { LAUNCH_VALUE: argument }, "linux")], { encoding: "utf8" });
+  expect(existsSync(output), result.stderr).toBe(true);
+  expect(JSON.parse(readFileSync(output, "utf8"))).toEqual({ argv: [argument], value: argument });
+  expect(JSON.parse(readFileSync(receipt, "utf8")).ok).toBe(false);
+});
+
 test.skipIf(process.platform === "win32")("the Unix launcher preserves argument boundaries and publishes its exit", () => {
   const directory = mkdtempSync(join(tmpdir(), "teleport-unix-'"));
   fixtures.push(directory);
