@@ -47,9 +47,9 @@ export function formatRemovedWorktree(resource: Resource): string {
   return `Removed worktree ${qualifyLocation(resource.path, resource.machine)}\nBranch: ${resource.branch}`;
 }
 
-async function scheduleSourceCleanup(pi: ExtensionAPI, context: HerdrContext, cwd: string, sessionFile: string, stateDir: string): Promise<void> {
+async function scheduleSourceCleanup(pi: ExtensionAPI, context: HerdrContext, cwd: string, sessionFile: string, stateDir: string, retireRoute?: import("./bridge.ts").AppSourceCleanup["retireRoute"]): Promise<void> {
   preserveHerdrSourceWorkspace(context, cwd);
-  if (context.backend === "app") return startAppSourceCleanup({ context, cwd, sessionFile, sourcePid: process.pid }, stateDir);
+  if (context.backend === "app") return startAppSourceCleanup({ context, cwd, sessionFile, sourcePid: process.pid, retireRoute }, stateDir);
   const cleanup = buildSourcePaneCleanup(context.paneId, process.pid, sessionFile);
   const result = process.platform === "win32"
     // Start-Process owns a separate hidden window, so closing the source pane cannot kill cleanup.
@@ -72,7 +72,7 @@ export default function teleport(pi: ExtensionAPI) {
   });
   pi.on("tool_execution_end", (event) => { executions.delete(event.toolCallId); });
   if (process.env.PI_TELEPORT_PROBE) {
-    process.stdout.write(`PI_TELEPORT_PROBE:${process.env.PI_TELEPORT_PROBE}:${JSON.stringify({ fingerprint: implementation, worker: workerFile, agentDir: agentDirectory(), version: VERSION, command: piCommand(), core: appConnection() })}\n`);
+    process.stdout.write(`PI_TELEPORT_PROBE:${process.env.PI_TELEPORT_PROBE}:${JSON.stringify({ fingerprint: implementation, worker: workerFile, agentDir: agentDirectory(), version: VERSION, command: piCommand(), core: appConnection(), platform: process.platform })}\n`);
   }
   let sessionId = "unknown";
   let dir = dataDir(sessionId);
@@ -103,22 +103,23 @@ export default function teleport(pi: ExtensionAPI) {
     finally { ctx.ui.setStatus("teleport-check", undefined); }
   }
 
-  async function retireSource(ctx: ExtensionCommandContext, source: string, context: HerdrContext) {
-    try { await scheduleSourceCleanup(pi, context, ctx.cwd, source, dir); }
+  async function retireSource(ctx: ExtensionCommandContext, source: string, context: HerdrContext, retireRoute?: import("./bridge.ts").AppSourceCleanup["retireRoute"]) {
+    try { await scheduleSourceCleanup(pi, context, ctx.cwd, source, dir, retireRoute); }
     catch (error) { notify(ctx, `Destination is running. Could not close source pane ${context.paneId}: ${String(error)}`, "error"); }
     ctx.shutdown();
   }
 
   async function jumpRemote(ctx: ExtensionCommandContext, host: string, path: string, execution: TeleportExecution) {
-    const herdr = getHerdrContext();
+    let herdr = getHerdrContext();
     if (!herdr) throw new Error("Remote Teleport requires Herdr on both machines. Local moves still work without Herdr.");
     assertHerdrContext(herdr);
     const { source, sessionText } = snapshot(ctx);
     const profile = remoteMachine(host, herdr);
+    herdr = profile.sourceContext || herdr;
     const remote = probeRemote(host, path, implementation);
     const id = randomUUID();
     const state = readState(dir);
-    const move = { id, host, path, ...profile, sourceCwd: ctx.cwd, sourceSession: source, sourcePid: process.pid, sessionText, sessionId, execution, sessionName: ctx.sessionManager.getSessionName(), state, stateDir: dir, herdr, fingerprint: implementation, remoteWorker: remote.worker, remoteAgentDir: remote.agentDir, localVersion: VERSION, remoteVersion: remote.version, localCommand: piCommand(), remoteCommand: remote.command, remoteCore: remote.core };
+    const move = { id, host, path, ...profile, sourceCwd: ctx.cwd, sourceSession: source, sourcePid: process.pid, sessionText, sessionId, execution, sessionName: ctx.sessionManager.getSessionName(), state, stateDir: dir, herdr, fingerprint: implementation, remoteWorker: remote.worker, remoteAgentDir: remote.agentDir, localVersion: VERSION, remoteVersion: remote.version, localCommand: piCommand(), remoteCommand: remote.command, remoteCore: remote.core, remotePlatform: remote.platform };
     state.pendingRemote = { id, receipt: join(dir, "bridges", id, "result.json") };
     writeState(dir, state);
     // Keep the captured source state independent from the in-flight marker.
@@ -152,7 +153,7 @@ export default function teleport(pi: ExtensionAPI) {
     writeState(dir, state);
     let result: unknown;
     try {
-      result = await requestController(state.returnRoute, { action: "return", operationId: state.returnRoute.operationId, sessionText, execution, state, cwd: ctx.cwd, sessionName: ctx.sessionManager.getSessionName() });
+      result = await requestController(state.returnRoute, { action: "return", operationId: state.returnRoute.operationId, sessionText, execution, state, cwd: ctx.cwd, sourcePid: process.pid, sessionName: ctx.sessionManager.getSessionName() });
     } catch (error) {
       const uncertain = error instanceof UnknownRemoteOutcome;
       try { writeFileSync(receipt, JSON.stringify({ ok: false, uncertain, error: String(error) }), { mode: 0o600 }); } catch { /* The persisted pending marker still fences this source. */ }
@@ -165,7 +166,8 @@ export default function teleport(pi: ExtensionAPI) {
     }
     try { writeFileSync(receipt, JSON.stringify(result), { mode: 0o600 }); }
     catch { notify(ctx, "Return committed. Its local receipt could not be saved; continue only at the returned destination.", "error"); }
-    await retireSource(ctx, source, herdr);
+    if ((result as { cleanupScheduled?: boolean })?.cleanupScheduled === true) ctx.shutdown();
+    else await retireSource(ctx, source, herdr, state.returnRoute);
   }
   async function jump(ctx: ExtensionCommandContext, rawTarget: string, execution: TeleportExecution) {
     const sourceCwd = ctx.cwd;

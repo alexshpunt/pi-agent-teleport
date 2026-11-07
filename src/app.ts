@@ -96,6 +96,19 @@ export function runAppProxy(context: HerdrContext, machine: string, args: string
   }
 }
 
+/** Identify an SSH destination as this source terminal's desktop by its exact UI handles. */
+export function discoverAppDesktop(context: HerdrContext, target: string): HerdrContext | undefined {
+  const route = { target, ...(context.appSsh?.target === target && context.appSsh.session ? { session: context.appSsh.session } : {}) };
+  const result = runApp({ ...context, appRoute: undefined, appSsh: route }, ["ls"]);
+  if (!Array.isArray(result.spaces)) throw new Error("Herdr App returned no spaces.");
+  const matches = (result.spaces as AppSpace[]).filter((space) => {
+    const machine = space.machine;
+    return typeof machine === "string" && !!machine && !machine.includes("/") && space.id === `${machine}/${context.workspaceId}` && Array.isArray(space.tabs) && space.tabs.some((tab) => tab.id === `${machine}/${context.tabId}` && Array.isArray(tab.terminals) && tab.terminals.some((terminal) => terminal.terminal === `${machine}/${context.paneId}`));
+  });
+  if (matches.length !== 1 || (context.appMachine && context.appMachine !== matches[0].machine)) return;
+  return { ...context, appMachine: matches[0].machine!, ...(context.appRoute || context.appSsh ? {} : { appSsh: route }) };
+}
+
 /** Negotiate with the running window, not potentially stale CLI metadata. */
 export function createAppItem(context: HerdrContext, command: "space.new" | "tab.new", args: Record<string, unknown>): any {
   try { return runApp(context, ["do", command, JSON.stringify({ ...args, focus: false })]); }
