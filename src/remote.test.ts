@@ -2,7 +2,43 @@ import { describe, expect, test, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, Socket } from "node:net";
 import { dirname, join, resolve } from "node:path";
-import { independentProcessEnvironment, confirmArrival, hasSessionProcess, parseTarget, qualifyLocation, relocateSession, requestController, UnknownRemoteOutcome, validateReady, waitForReceipt } from "./remote.ts";
+import { execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { fingerprintFiles, waitForForward, validProbe, remoteNodeCommand, independentProcessEnvironment, confirmArrival, hasSessionProcess, parseTarget, qualifyLocation, relocateSession, requestController, UnknownRemoteOutcome, validateReady, waitForReceipt } from "./remote.ts";
+
+test("matching Windows and Unix checkouts have the same runtime fingerprint", () => {
+  const unix = [{ name: "entry.ts", content: "const x = 1;\nconst y = 2;\n" }];
+  const windows = [{ name: "entry.ts", content: "const x = 1;\r\nconst y = 2;\r\n" }];
+  expect(fingerprintFiles(windows)).toBe(fingerprintFiles(unix));
+  expect(fingerprintFiles([{ name: "entry.ts", content: "const x = 2;\nconst y = 2;\n" }])).not.toBe(fingerprintFiles(unix));
+});
+
+test("a dynamic SSH return forward reports its assigned port before staging", async () => {
+  const child = spawn(process.execPath, ["-e", "process.stderr.write('Allocated port 45234 for remote forward\\n'); setInterval(() => {}, 1000)"], { stdio: ["ignore", "ignore", "pipe"] });
+  try { await expect(waitForForward(child, true)).resolves.toBe(45234); }
+  finally { child.kill(); }
+});
+
+test("an SSH return forward that exits before confirmation fails", async () => {
+  const child = spawn(process.execPath, ["-e", "process.exit(1)"], { stdio: ["ignore", "ignore", "pipe"] });
+  await expect(waitForForward(child, true)).rejects.toBeInstanceOf(Error);
+});
+
+test("remote probe accepts Windows absolute runtime paths and rejects relative ones", () => {
+  const receipt = { fingerprint: "fingerprint", worker: "C:\\Users\\User\\bridge.ts", agentDir: "C:\\Users\\User\\.pi", platform: "win32" };
+  expect(validProbe(receipt, "fingerprint")).toBe(true);
+  expect(validProbe({ ...receipt, worker: "relative\\bridge.ts" }, "fingerprint")).toBe(false);
+  expect(validProbe(receipt, "other")).toBe(false);
+});
+
+test("remote node commands preserve arbitrary data without interpreting shell metacharacters", () => {
+  const value = `C:\\a b\\quote'\";$(exit 7)\\file`;
+  const script = `process.stdout.write(JSON.stringify(${JSON.stringify(value)}))`;
+  const shell = process.platform === "win32" ? "powershell.exe" : "sh";
+  const args = process.platform === "win32" ? ["-NoProfile", "-Command", remoteNodeCommand(script)] : ["-c", remoteNodeCommand(script)];
+  const output = execFileSync(shell, args, { encoding: "utf8" });
+  expect(JSON.parse(output)).toBe(value);
+});
 
 test("detached controllers retain routing but cannot inherit their source terminal's identity or sweep scope", () => {
   const input = { HC_SCOPE: "source-lifetime", HC_TERMINAL_ID: "t7", HC_TERMINAL_SOCKET: "/owned/core.sock", HC_SOCKET: "/owned/core.sock", HC_SESSION: "owned", HERDR_ENV: "1", HERDR_PANE_ID: "p7", HERDR_TAB_ID: "tb7", HERDR_WORKSPACE_ID: "sp7", HERDR_SOCKET_PATH: "/legacy.sock", HOME: "/home/test", KEEP: "value" };
@@ -27,6 +63,22 @@ test("a callback preserves structured success and carries its route token", asyn
   }), async (socket) => {
     expect(await requestController({ socket, token: "private-route" }, { action: "return" })).toEqual({ ok: true, destination: "/source" });
   });
+});
+
+test("a Windows callback uses the authenticated loopback forwarding channel", async () => {
+  const server = createServer((socket) => socket.once("data", (data) => {
+    expect(JSON.parse(data.toString())).toMatchObject({ token: "private-route", action: "return" });
+    socket.end(`${JSON.stringify({ ok: true, destination: "/source" })}\n`);
+  }));
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  try {
+    await expect(requestController({ socket: `tcp://127.0.0.1:${port}`, token: "private-route" }, { action: "return" })).resolves.toEqual({ ok: true, destination: "/source" });
+  } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
+});
+
+test("a forwarded callback rejects non-loopback TCP addresses", async () => {
+  await expect(requestController({ socket: "tcp://192.0.2.1:22", token: "secret" }, { action: "return" })).rejects.toBeInstanceOf(Error);
 });
 
 test("a known callback refusal differs from an unknown disconnected outcome", async () => {
@@ -167,6 +219,11 @@ describe("machine-qualified destinations", () => {
 
   test.each(["ssh://-oProxyCommand=bad/root", "ssh://vps:22/root", "ssh://vps", "ssh://vps/", "ssh://vps/root\ncommand", "https://vps/root"])("rejects ambiguous or unsafe target %s", (target) => {
     expect(() => parseTarget(target, "/local")).toThrow();
+  });
+
+  test("preserves Windows drive paths across a remote location and its URL", () => {
+    expect(parseTarget("ssh://windows/C:/dev/Project with spaces", "/local")).toEqual({ host: "windows", path: "C:/dev/Project with spaces" });
+    expect(qualifyLocation("C:\\dev\\Project with spaces", "windows")).toBe("ssh://windows/C:/dev/Project with spaces");
   });
 
   test("treats a URL for the current machine as a local directory", () => {
