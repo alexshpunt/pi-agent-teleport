@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.8 - 2026-10-28
+
+- Wait for destination Pi startup without a time limit. Cancel on a reported startup failure or an observed process exit, keeping the source session usable.
+- Preserve the active agent profile when moving between local Herdr panes.
+- Stop the source tool batch before a queued move and preserve queued instructions, so subsequent relative file operations run in the destination directory.
+- Launch and retire Pi sessions in Windows Herdr PowerShell panes with literal paths, arguments and environment values. Accept equivalent Windows directory spellings while retaining exact process and session checks.
+
 ## 0.2.7 - 2026-10-21
 
 - Keep delayed move outcomes beside their originating Teleport calls, including calls nested inside another tool, without duplicate output in Conversation.

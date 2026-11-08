@@ -93,6 +93,7 @@ function sourceRun(testName: string, target: string, conversation: ReturnType<ty
   delete process.env.PI_INTEGRATION_TEST_RUNNER;
   return new PiIntegrationTest({
     testName,
+    piCommand: join(directory, "bin", "pi"),
     timeoutMs: 100_000,
     artifactsDir: testArtifactsDir(import.meta.filename),
     cwd: source,
