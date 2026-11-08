@@ -75,21 +75,26 @@ source. Other panes and tabs stay open.
 On native Windows, Teleport sends an encoded PowerShell launch script and runs the
 current Pi installation directly. This preserves literal Windows paths and handoff
 environment values, and lets Herdr observe Pi's own readiness PID instead of an npm
-wrapper. A separate hidden PowerShell process retires the source pane and removes
-its session file. Windows handoffs do not require a POSIX shell.
+wrapper. Local legacy Herdr handoffs use a separate hidden PowerShell process to
+retire the source pane and remove its session file. Windows handoffs do not require
+a POSIX shell.
 
 If the source is the last pane in a primary-checkout workspace, Teleport first creates
 a shell tab there with `--no-focus`. Linked-worktree and plain-directory workspaces
 do not get replacement shells when their last pane leaves.
 
-Remote commands always select the destination's saved Herdr machine. Pane IDs are
-server-scoped; inherited local IDs must not identify a remote pane.
+Remote commands select the destination's saved Herdr machine. If the destination
+hosts the App window for a remote source, Teleport instead verifies the source's
+workspace, tab and terminal against that window and uses its local desktop. Pane IDs
+are server-scoped; inherited local IDs must not identify a remote pane.
 
 ## Remote activation and return
 
 Remote preflight runs the destination's configured `pi` from the target directory.
-The loaded Teleport fingerprint must match the source implementation. Other packages,
-settings, provider credentials and repository contents are not transferred.
+The loaded Teleport fingerprint must match the source implementation; checkout line
+endings do not affect the fingerprint. The probe stops after three minutes if Pi has
+not exited. Other packages, settings, provider credentials and repository contents
+are not transferred.
 
 A destination readiness callback must match the operation, session ID, session file,
 cwd, agent directory and owned pane. Teleport also checks its native foreground
@@ -99,9 +104,13 @@ A lost readiness reply does not override an already published commit.
 
 A detached controller on the original computer survives source Pi retirement.
 A locally initiated SSH connection forwards a private remote Unix socket to this
-controller. The callback protocol permits authenticated readiness and return requests,
-not arbitrary local commands. It never forwards the raw Herdr socket or opens a public
-port. The destination needs no SSH key back to the original computer.
+controller. For a Windows destination, it forwards a dynamically assigned loopback
+TCP port to the controller instead. Teleport waits for SSH to confirm the forward
+before staging an arrival and reconnects using the same port. The callback protocol
+permits authenticated readiness and return requests, not arbitrary local commands.
+It never forwards the raw Herdr socket or opens a public port. The destination needs
+no SSH key back to the original computer. After a desktop return, the controller uses
+an independent SSH process to retire the Windows source outside its terminal job.
 
 The controller attempts up to three reconnections after a tunnel disconnect.
 The original computer must remain available. If reconnection fails, the remote

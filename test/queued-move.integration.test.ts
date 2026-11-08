@@ -7,6 +7,9 @@ test("a pending move lets Pi deliver the full user queue at the source", async (
   await mkdir(resolve(".tmp"), { recursive: true });
   const root = await mkdtemp(resolve(".tmp/queued-move-"));
   const source = join(root, "source"), target = join(root, "target"), agent = join(root, "agent");
+  // Moving and returning must use this process's initial session directory.
+  const sharedRunner = process.env.PI_INTEGRATION_TEST_RUNNER;
+  delete process.env.PI_INTEGRATION_TEST_RUNNER;
   try {
     await Promise.all([source, target, agent].map((dir) => mkdir(dir)));
     await writeFile(join(agent, "settings.json"), JSON.stringify({ followUpMode: "all" }));
@@ -35,5 +38,8 @@ test("a pending move lets Pi deliver the full user queue at the source", async (
     expect(queued).toContain("first-queued-instruction");
     expect(queued).toContain("second-queued-instruction");
     expect(result.state?.cwd).toBe(target);
-  } finally { await rm(root, { recursive: true, force: true }); }
+  } finally {
+    if (sharedRunner !== undefined) process.env.PI_INTEGRATION_TEST_RUNNER = sharedRunner;
+    await rm(root, { recursive: true, force: true });
+  }
 });

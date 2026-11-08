@@ -37,6 +37,9 @@ test("batched jump and back move relative IDE file operations before the next re
   await mkdir(path.resolve(".tmp"), { recursive: true });
   const root = await mkdtemp(path.resolve(".tmp/teleport-cwd-"));
   const source = path.join(root, "source"), target = path.join(root, "target"), agent = path.join(root, "agent");
+  // Moving and returning must use this process's initial session directory.
+  const sharedRunner = process.env.PI_INTEGRATION_TEST_RUNNER;
+  delete process.env.PI_INTEGRATION_TEST_RUNNER;
   try {
     await Promise.all([source, target, agent].map((dir) => mkdir(dir)));
     for (const [dir, label] of [[source, "source"], [target, "target"]])
@@ -98,5 +101,8 @@ test("batched jump and back move relative IDE file operations before the next re
       "moved.txt": "target move\n", "created.txt": "created marker", "target-only.txt": "target-only-marker\n",
       "back-companion.txt": "complete",
     });
-  } finally { await rm(root, { recursive: true, force: true }); }
+  } finally {
+    if (sharedRunner !== undefined) process.env.PI_INTEGRATION_TEST_RUNNER = sharedRunner;
+    await rm(root, { recursive: true, force: true });
+  }
 }, 110_000);

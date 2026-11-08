@@ -59,10 +59,13 @@ Before moving:
 
 - Install the same Teleport build on both machines. Pi versions may differ; Teleport
   does not upgrade or downgrade either installation.
-- Run Herdr on both machines. Add the destination as one enabled saved Herdr machine
-  using the same SSH alias as the address.
+- Run Herdr on both machines. Add the destination as a saved direct Herdr machine
+  using the same SSH alias as the address. When moving from an App-managed remote
+  terminal to the computer hosting its window, Teleport identifies that desktop from
+  the source workspace, tab and terminal instead.
 - Set up key-based SSH access and host-key trust. Put connection options in SSH config.
-  The SSH server must allow Unix-socket forwarding.
+  The SSH server must allow remote forwarding: Unix sockets for Unix destinations,
+  or loopback TCP for Windows destinations.
 - Prepare the destination directory and configure Pi there with its own model and
   authentication. Teleport does not copy your repository, credentials, settings, or
   other extensions.
@@ -71,8 +74,9 @@ Keep the original computer awake and connected until the agent returns. Brief
 disconnections can recover, but a prolonged connection loss may need manual recovery.
 
 If a move is reported as unconfirmed, ask the agent to inspect it before retrying.
-A slow agent startup has no time limit. Teleport cancels startup only on a reported
-failure or an observed exit, not because time has passed.
+Destination readiness has no time limit after launch. Teleport cancels that startup
+only on a reported failure or an observed exit. The earlier Pi installation probe has
+a three-minute limit.
 
 ## Worktrees and safety
 

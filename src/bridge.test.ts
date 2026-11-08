@@ -53,6 +53,32 @@ function arrival(configure?: (input: Parameters<typeof stageArrival>[0], stateDi
   return { prepared, stateDir, previous };
 }
 
+test("an asynchronous native observation confirms a command's exit without overlapping polls", async () => {
+  vi.useFakeTimers();
+  try {
+    let release!: () => void;
+    const first = new Promise<void>((resolve) => { release = resolve; });
+    let polls = 0;
+    const watch = watchArrival({
+      observe: async () => {
+        polls++;
+        if (polls === 1) { await first; return { shell_pid: 10, foreground_process_group_id: 20, foreground_processes: [{ pid: 20 }] }; }
+        return { shell_pid: 10, foreground_process_group_id: 10, foreground_processes: [{ pid: 10 }] };
+      },
+      output: async () => undefined,
+    });
+    let failure: unknown;
+    const settled = watch.ready.catch((error) => { failure = error; });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(polls).toBe(1);
+    release();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(failure).toBeInstanceOf(Error);
+    watch.resolve();
+    await settled;
+  } finally { vi.useRealTimers(); }
+});
+
 test("a live arrival stays pending until startup confirms readiness", async () => {
   vi.useFakeTimers();
   try {
