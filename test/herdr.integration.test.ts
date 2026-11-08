@@ -121,7 +121,9 @@ test.skipIf(!available).each(["last pane", "sibling pane", "sibling tab"])("sour
   expect(remaining[0].pane_id).not.toBe(source.paneId);
   if (companionId) expect(remaining[0].pane_id).toBe(companionId);
   else {
-    expect(runHerdr(context, ["tab", "get", remaining[0].tab_id]).tab.label).toBe("shell");
+    const tab = runHerdr(context, ["tab", "get", remaining[0].tab_id]).tab;
+    expect(tab.tab_id).toBe(remaining[0].tab_id);
+    expect(tab.workspace_id).toBe(source.workspaceId);
     expect(remaining[0].cwd).toBe(repo);
   }
   expect(focus()).toEqual(before);
