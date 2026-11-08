@@ -70,6 +70,31 @@ test.each([true, false])("an uncertain remote outcome keeps its fence and does n
   expect(vi.mocked(startRemoteMove).mock.calls[0][0].execution).toEqual({ sessionId: "owned-session", toolCallId: "root", parentToolCallId: "root" });
 });
 
+test("a local move in Herdr preflights and switches in the existing terminal", async () => {
+  vi.mocked(getHerdrContext).mockReturnValue({ paneId: "pane", workspaceId: "workspace", tabId: "tab", session: "test" });
+  const f = await fixture();
+  const target = join(root, "target");
+  mkdirSync(target);
+  await f.queue(target);
+  expect(vi.mocked(preflightSession).mock.calls[0][0]).toMatchObject({ target });
+  expect(f.ctx.switchSession).toHaveBeenCalledOnce();
+  expect(f.ctx.shutdown).not.toHaveBeenCalled();
+  expect(readFileSync(f.file, "utf8")).toContain("owned-session");
+});
+test("a cancelled local move restores the process working directory", async () => {
+  const f = await fixture();
+  const target = join(root, "target");
+  mkdirSync(target);
+  const original = process.cwd();
+  let duringSwitch = "";
+  f.ctx.switchSession.mockImplementation(async () => {
+    duringSwitch = process.cwd();
+    return { cancelled: true };
+  });
+  await f.queue(target);
+  expect(duringSwitch).toBe(target);
+  expect(process.cwd()).toBe(original);
+});
 test("a cancelled local switch retains the source and reports failure rather than completion", async () => {
   const f = await fixture();
   const target = join(root, "target");
