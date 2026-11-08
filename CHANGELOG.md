@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.9 - 2026-11-08
+
+- Move sessions between WSL and Windows through Herdr App, including returns to the desktop hosting the source window.
+- Keep local moves in the current Pi terminal instead of opening or retiring Herdr panes and tabs.
+- Restore the selected model and thinking level at the destination. Keep the source session when the selected model or its authentication is unavailable.
+- Check the destination Teleport installation before a handoff and preserve recovery information when a move cannot be confirmed.
+
 ## 0.2.8 - 2026-10-28
 
 - Wait for destination Pi startup without a time limit. Cancel on a reported startup failure or an observed process exit, keeping the source session usable.
