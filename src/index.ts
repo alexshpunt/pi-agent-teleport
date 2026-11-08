@@ -1,16 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { SessionManager, VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import { ownsExecution, registerTeleportOutput, type TeleportExecution, type TeleportOutcome } from "./output.ts";
-import { createManagedWorktree, prepareHerdrDestination, preserveHerdrSourceWorkspace, readState, reconcileState, removeManagedWorktree, writeState, type Resource } from "./core.ts";
-import { appConnection, assertHerdrContext, getHerdrContext, guardedLaunch, powershellCommand, powershellQuote, runHerdr, type HerdrContext } from "./herdr.ts";
-import { awaitHerdrArrival, preflightSession, writeReadiness } from "./readiness.ts";
-import { UnknownRemoteOutcome, agentDirectory, piCommand, arrivalGuardFile, type ModelIdentity, confirmArrival, extensionFile, parseTarget, probeRemote, qualifyLocation, remoteMachine, requestController, runtimeFingerprint, shellQuote as quote, startAppSourceCleanup, startRemoteMove, workerFile } from "./remote.ts";
+import { createManagedWorktree, preserveHerdrSourceWorkspace, readState, reconcileState, removeManagedWorktree, writeState, type Resource } from "./core.ts";
+import { appConnection, assertHerdrContext, getHerdrContext, powershellCommand, powershellQuote, type HerdrContext } from "./herdr.ts";
+import { preflightSession, writeReadiness } from "./readiness.ts";
+import { UnknownRemoteOutcome, agentDirectory, piCommand, type ModelIdentity, confirmArrival, extensionFile, parseTarget, probeRemote, qualifyLocation, remoteMachine, requestController, runtimeFingerprint, shellQuote as quote, startAppSourceCleanup, startRemoteMove, workerFile } from "./remote.ts";
 
 function dataDir(sessionId: string): string { return join(process.env.PI_CODING_AGENT_DIR ?? join(process.env.HOME ?? homedir(), ".pi", "agent"), "teleport", sessionId); }
 function serialize(ctx: ExtensionCommandContext, target: string): { source: string; destination: string } {
@@ -62,6 +62,7 @@ export default function teleport(pi: ExtensionAPI) {
   const implementation = runtimeFingerprint();
   const publishOutcome = registerTeleportOutput(pi);
   const executions = new Map<string, TeleportExecution>();
+  const renderedMoves = new WeakMap<Text, { cwd: string; source: string }>();
   pi.on("tool_execution_start", (event, ctx) => {
     const parent = event.parentToolCallId ? executions.get(event.parentToolCallId) : undefined;
     const currentSession = ctx.sessionManager.getSessionId();
@@ -187,55 +188,19 @@ export default function teleport(pi: ExtensionAPI) {
     const parsed = parseTarget(rawTarget, ctx.cwd, currentState.machine);
     if (parsed.host) { await jumpRemote(ctx, parsed.host, parsed.path, execution); return; }
     const target = realpathSync(parsed.path);
-    const context = getHerdrContext();
     const expectedModel = selectedModel(ctx);
     // In-process replacement disposes this session before the destination starts. Prove the destination starts first.
-    if (!context) await checkDestination(ctx, target);
+    await checkDestination(ctx, target);
     const { source, destination } = serialize(ctx, target);
     let state = readState(dir);
     const transitionId = randomUUID();
     state.transition = { id: transitionId, phase: "prepared", from: sourceCwd, to: target, sourceSession: source, destinationSession: destination, startedAt: Date.now() };
     writeState(dir, state);
 
-    if (context) {
-      let prepared: ReturnType<typeof prepareHerdrDestination> | undefined;
-      const receipts = join(dir, "readiness");
-      const receipt = join(receipts, transitionId, "ready.json");
-      try {
-        mkdirSync(dirname(receipt), { recursive: true, mode: 0o700 });
-        const resource = Object.values(state.resources).find((resource) => resource.machine === state.machine && resource.path === target);
-        prepared = prepareHerdrDestination(context, target, resource?.herdr, ctx.sessionManager.getSessionName());
-        const location = prepared.location;
-        const continuation = Buffer.from(JSON.stringify({ execution, from: qualifyLocation(sourceCwd, state.machine), to: qualifyLocation(target, state.machine), receipt, expectedModel: selectedModel(ctx) }), "utf8").toString("base64url");
-        runHerdr(context, ["pane", "run", location.paneId, guardedLaunch([...(context.backend === "app" || process.platform === "win32" ? piCommand() : ["pi"]), "--extension", arrivalGuardFile, "--approve", "--session", destination, "/__teleport_arrival"], receipt, { PI_CODING_AGENT_DIR: agentDirectory(), PI_TELEPORT_CONTINUATION: continuation, PI_TELEPORT_APP_CONTEXT: process.env.PI_TELEPORT_APP_CONTEXT || "" })]);
-        // The destination stays gated until this commit; the source retires only after its own readiness verdict.
-        await awaitHerdrArrival(context, location.paneId, destination, receipt);
-        state = readState(dir);
-        state.active = { cwd: target, sessionFile: destination, herdr: location };
-        state.history.push({ from: qualifyLocation(sourceCwd, state.machine), to: qualifyLocation(target, state.machine), at: Date.now(), status: "completed", fromHerdr: context, toHerdr: location });
-        if (resource?.herdr && state.resources[resource.id]) state.resources[resource.id].herdr = { ...location, parentWorkspaceId: resource.herdr.parentWorkspaceId };
-        delete state.transition;
-        writeState(dir, state);
-        rmSync(dirname(receipt), { recursive: true, force: true });
-      } catch (error) {
-        try { prepared?.rollback(); } catch {}
-        rmSync(destination, { force: true });
-        rmSync(dirname(receipt), { recursive: true, force: true });
-        state = readState(dir);
-        state.active = { cwd: sourceCwd, sessionFile: source, herdr: context };
-        delete state.transition;
-        writeState(dir, state);
-        throw error;
-      }
-      // A confirmed destination must never be rolled back if source cleanup fails.
-      try { await scheduleSourceCleanup(pi, context, sourceCwd, source, dir); }
-      catch (error) { notify(ctx, `Destination is running. Could not close source pane ${context.paneId}: ${String(error)}`, "error"); }
-      ctx.shutdown();
-      return;
-    }
-
     let started = false;
-    process.env.PI_TELEPORT_LOCAL_MODEL = JSON.stringify({ sessionFile: destination, expectedModel });
+    const originalProcessCwd = process.cwd();
+    process.chdir(target);
+    process.env.PI_TELEPORT_LOCAL_MODEL = JSON.stringify({ sessionFile: destination, expectedModel, stateDir: dir });
     let result: { cancelled: boolean };
     try { result = await ctx.switchSession(destination, { withSession: async (next) => {
       started = true;
@@ -246,6 +211,7 @@ export default function teleport(pi: ExtensionAPI) {
       } catch { /* Treat an authentication lookup failure as a failed handoff. */ }
       if (!auth?.ok) {
         const message = `Teleport could not restore ${expectedModel.provider}/${expectedModel.id} with thinking level ${expectedModel.thinkingLevel}. Source session: ${source}`;
+        process.chdir(originalProcessCwd);
         process.env.PI_TELEPORT_LOCAL_MODEL = JSON.stringify({ sessionFile: source, expectedModel });
         try {
           const rollback = await next.switchSession(source, { withSession: async (restored) => {
@@ -275,7 +241,10 @@ export default function teleport(pi: ExtensionAPI) {
         display: false,
         details: { outcome: { ...execution, status: "completed", text: `Agent teleported: ${sourceCwd} → ${target}` } satisfies TeleportOutcome },
       }, { triggerTurn: true, deliverAs: "followUp" });
-    }}); } finally { delete process.env.PI_TELEPORT_LOCAL_MODEL; }
+    }}); } finally {
+      delete process.env.PI_TELEPORT_LOCAL_MODEL;
+      if (!started) process.chdir(originalProcessCwd);
+    }
     if (result.cancelled || !started) { rmSync(destination, { force: true }); state = readState(dir); delete state.transition; writeState(dir, state); throw new Error("Teleport was cancelled."); }
   }
 
@@ -417,15 +386,28 @@ export default function teleport(pi: ExtensionAPI) {
       const component = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
       const title = theme.fg("toolTitle", theme.bold("✦ Agent teleport"));
       if (args.action === "jump" && args.target) {
-        const state = readState(dir);
+        const localModel = process.env.PI_TELEPORT_LOCAL_MODEL;
+        const renderDir = localModel ? (JSON.parse(localModel) as { stateDir?: string }).stateDir ?? dir : dir;
+        const state = readState(renderDir);
+        const previous = renderedMoves.get(component);
+        const transition = state.transition;
+        let transitionCwd: string | undefined;
+        if (transition && context.cwd === transition.to) {
+          try {
+            const parsed = parseTarget(args.target, transition.from, state.machine);
+            if (!parsed.host && parsed.path === transition.to) transitionCwd = transition.from;
+          } catch { /* Invalid input is reported by execute. */ }
+        }
+        const cwd = previous?.cwd ?? transitionCwd ?? context.cwd;
         let target = args.target;
         try {
-          const parsed = parseTarget(args.target, context.cwd, state.machine);
+          const parsed = parseTarget(args.target, cwd, state.machine);
           target = qualifyLocation(parsed.path, parsed.host ?? state.machine);
         } catch { /* Invalid input is reported by execute, not by the renderer. */ }
         const completed = state.history.findLast((entry) => entry.to === target);
-        const current = qualifyLocation(context.cwd, state.machine);
-        const source = current === target && completed ? completed.from : current;
+        const current = qualifyLocation(cwd, state.machine);
+        const source = previous?.source ?? (current === target && completed ? completed.from : current);
+        renderedMoves.set(component, { cwd, source });
         component.setText(`${title}\n  ${theme.fg("accent", source)}\n  ${theme.fg("muted", "└─→")} ${theme.fg("warning", target)}`);
       } else if (args.action === "back") {
         component.setText(`${title} ${theme.fg("accent", "←")} ${theme.fg("muted", "previous location")}`);
