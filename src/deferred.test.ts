@@ -26,6 +26,7 @@ async function fixture() {
   let command = "";
   const messages: any[] = [];
   const ctx = {
+    model: { provider: "test", id: "model" },
     cwd: root,
     sessionManager: { getSessionId: () => header.id, getHeader: () => header, getSessionFile: () => file, getSessionName: () => undefined, getEntries: () => entries, getBranch: () => entries },
     ui: { notify: vi.fn(), setStatus: vi.fn() }, isIdle: () => true, switchSession: vi.fn(async () => ({ cancelled: true })), shutdown: vi.fn(),
@@ -37,6 +38,7 @@ async function fixture() {
     },
     registerCommand: (name: string, definition: any) => { commands.set(name, definition); },
     registerTool: (definition: ToolDefinition) => { tool = definition; }, registerEntryRenderer: () => {},
+    getThinkingLevel: () => "off",
     appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
     sendUserMessage: (text: string) => { command = text; },
     sendMessage: (message: any) => { messages.push(message); events.get("message_end")!({ message: { ...message, role: "custom" } }, ctx); },
