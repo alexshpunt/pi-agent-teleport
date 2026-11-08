@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { prepareHerdrDestination, preserveHerdrSourceWorkspace } from "./core.ts";
+import { prepareHerdrDestination, preserveHerdrSourceWorkspace, writeState } from "./core.ts";
 import { runHerdr, isHerdrShell, type HerdrContext } from "./herdr.ts";
 import teleport, { buildSourcePaneCleanup, formatRemovedWorktree } from "./index.ts";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -156,6 +156,36 @@ describe("Herdr handoff", () => {
   });
 });
 
+test("the visible move retains its source while the current directory changes", () => {
+  let renderCall: ToolDefinition["renderCall"];
+  teleport({ registerTool: (definition: ToolDefinition) => { renderCall = definition.renderCall; },
+    registerCommand: () => {}, registerEntryRenderer: () => {}, on: () => {} } as unknown as ExtensionAPI);
+  const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as Parameters<NonNullable<ToolDefinition["renderCall"]>>[1];
+  const context = { cwd: "/source" } as Parameters<NonNullable<ToolDefinition["renderCall"]>>[2];
+  const component = renderCall!({ action: "jump", target: "/destination" }, theme, context);
+  const rerendered = renderCall!({ action: "jump", target: "/destination" }, theme, { ...context, cwd: "/destination", lastComponent: component });
+  const output = rerendered.render(120).join("\n");
+  expect(output).toContain("/source");
+  expect(output).toContain("/destination");
+});
+test("a move being resumed still renders its original source in a rebuilt component", () => {
+  const root = checkout();
+  vi.stubEnv("PI_CODING_AGENT_DIR", root);
+  try {
+    let renderCall: ToolDefinition["renderCall"];
+    teleport({ registerTool: (definition: ToolDefinition) => { renderCall = definition.renderCall; },
+      registerCommand: () => {}, registerEntryRenderer: () => {}, on: () => {} } as unknown as ExtensionAPI);
+    vi.stubEnv("PI_TELEPORT_LOCAL_MODEL", JSON.stringify({ stateDir: resolve(root, "teleport/fixture") }));
+    writeState(resolve(root, "teleport/fixture"), { version: 1, history: [], resources: {}, transition: {
+      id: "move", phase: "prepared", from: "/source", to: "/destination", sourceSession: "/a", destinationSession: "/b", startedAt: 1,
+    } });
+    const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as Parameters<NonNullable<ToolDefinition["renderCall"]>>[1];
+    const context = { cwd: "/destination" } as Parameters<NonNullable<ToolDefinition["renderCall"]>>[2];
+    const output = renderCall!({ action: "jump", target: "/destination" }, theme, context).render(120).join("\n");
+    expect(output).toContain("/source");
+    expect(output).toContain("/destination");
+  } finally { vi.unstubAllEnvs(); }
+});
 describe("worktree removal output", () => {
   test("does not call a removed history entry a missing argument after session reload", () => {
     let renderCall: ToolDefinition["renderCall"];

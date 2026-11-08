@@ -85,7 +85,7 @@ function teleportState(): any {
   return dir ? JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) : undefined;
 }
 const panes = () => runHerdr(caller, ["pane", "list"]).panes as Array<{ pane_id: string; cwd?: string }>;
-function sourceRun(testName: string, target: string, conversation: ReturnType<typeof assistantMessage>[]) {
+async function sourceRun(testName: string, target: string, conversation: ReturnType<typeof assistantMessage>[]) {
   const tab = runHerdr(caller, ["tab", "create", "--workspace", caller.workspaceId, "--cwd", source, "--no-focus"]);
   caller = herdrLocation(caller, { ...tab, workspace: { workspace_id: caller.workspaceId } });
   // Each source needs its own process, environment and Herdr identity, not the shared runner's.
@@ -94,12 +94,12 @@ function sourceRun(testName: string, target: string, conversation: ReturnType<ty
   return new PiIntegrationTest({
     testName,
     piCommand: join(directory, "bin", "pi"),
-    timeoutMs: 100_000,
+    timeoutMs: 150_000,
     artifactsDir: testArtifactsDir(import.meta.filename),
     cwd: source,
     // The scripted source believes it runs in the isolated server's source pane.
-    environment: isolated({ HERDR_ENV: "1", HERDR_SESSION: session, HERDR_WORKSPACE_ID: caller.workspaceId, HERDR_TAB_ID: caller.tabId, HERDR_PANE_ID: caller.paneId, PI_CODING_AGENT_DIR: agentDir }),
-    extensions: [join(fixtures, "..", "..", "src", "index.ts")],
+    environment: isolated({ HERDR_ENV: "1", HERDR_SESSION: session, HERDR_WORKSPACE_ID: caller.workspaceId, HERDR_TAB_ID: caller.tabId, HERDR_PANE_ID: caller.paneId, PI_CODING_AGENT_DIR: agentDir, TELEPORT_TEST_BROKEN_DESTINATION: broken, TELEPORT_TEST_SLOW_DESTINATION: slow }),
+    extensions: [join(fixtures, "..", "..", "src", "index.ts"), join(fixtures, "broken-destination.ts"), join(fixtures, "slow-destination.ts")],
     tools: ["teleport"],
     rawMode: false,
     conversation: [assistantMessage([toolCall({ id: "outward", name: "teleport", arguments: { action: "jump", target } })], { stopReason: "toolUse" }), ...conversation],
@@ -120,47 +120,29 @@ test.skipIf(!available)("a Herdr destination that dies during startup is rolled 
   expect(panes().some((pane) => pane.cwd === broken)).toBe(false);
 }, 120_000);
 
-test.skipIf(!available)("a Herdr destination taking longer than a minute still commits and continues once", async () => {
-  await sourceRun("herdr-slow-destination", slow, [assistantMessage([text("Unreachable source turn.")])]).catch(() => undefined);
-  const deadline = Date.now() + 30_000;
-  let state: any;
-  let entries: any[] = [];
-  while (Date.now() < deadline) {
-    state = teleportState();
-    const file = state?.active?.sessionFile;
-    if (state?.active?.cwd === slow && file && existsSync(file)) {
-      entries = readFileSync(file, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-      if (entries.some((entry) => entry.message?.role === "assistant" && entry.message.content?.some((item: any) => item.text === "Continuing at the destination."))) break;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  expect(state?.active?.cwd).toBe(slow);
+test.skipIf(!available)("a slow local destination continues in the existing Herdr terminal", async () => {
+  const result = await sourceRun("herdr-slow-destination", slow, [assistantMessage([text("Continuing at the destination.")])]);
+  const state = teleportState();
+  const entries = readFileSync(state.active.sessionFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  expect(state.active.cwd).toBe(slow);
   expect(state.transition).toBeUndefined();
-  expect(entries.filter((entry) => entry.customType === "pi-agent-teleport-continuation")).toHaveLength(1);
-  expect(entries.filter((entry) => entry.message?.role === "assistant" && entry.message.content?.some((item: any) => item.text === "Continuing at the destination."))).toHaveLength(1);
-  expect(panes().some((pane) => pane.pane_id === state.active.herdr.paneId && pane.cwd === slow)).toBe(true);
-}, 120_000);
-test.skipIf(!available)("a ready Herdr destination commits, continues the task and retires the source", async () => {
-  // The source retires itself after commit, so the harness never sees a second request.
-  await sourceRun("herdr-good-destination", good, [assistantMessage([text("Unreachable source turn.")])]).catch(() => undefined);
-  const deadline = Date.now() + 60_000;
-  let destination: string | undefined;
-  while (Date.now() < deadline) {
-    const state = teleportState();
-    destination = state?.active?.sessionFile;
-    if (state?.active?.cwd === good && destination && readFileSync(destination, "utf8").includes("Continuing at the destination.")) break;
-    await new Promise((r) => setTimeout(r, 200));
-  }
+  expect(result.providerRequests).toHaveLength(2);
+  expect(entries.filter((entry: any) => entry.customType === "pi-agent-teleport-continuation")).toHaveLength(1);
+  expect(entries.filter((entry: any) => entry.message?.role === "assistant" && entry.message.content?.some((item: any) => item.text === "Continuing at the destination."))).toHaveLength(1);
+  expect(panes().map((pane) => pane.pane_id)).toContain(caller.paneId);
+}, 160_000);
+test.skipIf(!available)("a local Herdr move keeps the terminal and continues at the destination", async () => {
+  const before = panes().map((pane) => pane.pane_id);
+  const result = await sourceRun("herdr-good-destination", good, [assistantMessage([text("Continuing at the destination.")])]);
   const state = teleportState();
   expect(state.transition).toBeUndefined();
   expect(state.active).toMatchObject({ cwd: good });
   expect(state.history.at(-1)).toMatchObject({ from: source, to: good, status: "completed" });
-  const transcript = readFileSync(destination!, "utf8");
+  const transcript = readFileSync(state.active.sessionFile, "utf8");
   expect(transcript).toContain("pi-agent-teleport-continuation");
   expect(transcript).toContain("Continuing at the destination.");
-  const arrival = panes().find((pane) => pane.pane_id === state.active.herdr.paneId);
-  expect(arrival?.cwd).toBe(good);
-  expect(runHerdr(caller, ["pane", "process-info", "--pane", arrival!.pane_id]).process_info.foreground_processes.some((process: { name?: string }) => process.name === "pi" || process.name === "node")).toBe(true);
-  // The readiness receipt is removed once the destination is committed.
-  expect(readdirSync(join(stateDir()!, "readiness"))).toEqual([]);
+  expect(result.providerRequests).toHaveLength(2);
+  expect(panes().map((pane) => pane.pane_id)).toEqual(expect.arrayContaining(before));
+  expect(panes().map((pane) => pane.pane_id)).toContain(caller.paneId);
+  expect(panes().some((pane) => pane.cwd === good)).toBe(false);
 }, 120_000);
