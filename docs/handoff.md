@@ -49,40 +49,31 @@ idle and inspect the handoff before retrying, as described below.
 
 ## Local handoff
 
-Without Herdr, Teleport records a prepared transition, builds a destination session
-with the same session ID and full conversation, and switches Pi to it. It removes
-the source session only after the replacement runtime restores the selected model,
-thinking level and authentication. A hidden continuation starts the next turn in
-the destination context. If restoration fails, Teleport retains the source and
-attempts to switch back; an unsuccessful rollback retains both session files.
+Local moves stay in the current Pi terminal, whether or not Herdr is running.
+Teleport first checks startup in the destination, then records a prepared transition,
+builds a destination session with the same session ID and full conversation, and
+switches Pi to it. It removes the source session only after the replacement runtime
+restores the selected model, thinking level and authentication. A hidden continuation
+starts the next turn in the destination context. If restoration fails, Teleport
+retains the source and attempts to switch back; an unsuccessful rollback retains
+both session files.
 
 ## Native Herdr integration
 
 Herdr detection requires `HERDR_ENV=1`, `HERDR_PANE_ID`, `HERDR_TAB_ID`, and
 `HERDR_WORKSPACE_ID`, plus the public `herdr` CLI with worktree commands. Teleport
 checks the live caller IDs before changing Herdr state. Missing environment values
-use ordinary Git creation and in-process switching for local moves. A valid but
-unreachable Herdr connection fails rather than silently changing modes.
-
-Local Git checkouts open through `herdr worktree open`. Teleport reuses an idle shell
-created by `create`, or creates a separate tab when a workspace has other work.
-Plain directories use a new tab in the current workspace. Destination tabs use the
-Pi session name, or the destination folder name when no session name exists.
-
-The destination waits for handoff commit before continuing. Teleport confirms the
-native process and saves explicit workspace, tab and pane IDs before retiring the
-source. Other panes and tabs stay open.
+use ordinary Git creation. A valid but unreachable Herdr connection fails rather than
+silently changing modes. Local moves do not open or retire Herdr panes or tabs.
 
 On native Windows, Teleport sends an encoded PowerShell launch script and runs the
 current Pi installation directly. This preserves literal Windows paths and handoff
 environment values, and lets Herdr observe Pi's own readiness PID instead of an npm
-wrapper. Local legacy Herdr handoffs use a separate hidden PowerShell process to
-retire the source pane and remove its session file. Windows handoffs do not require
-a POSIX shell.
+wrapper. Windows handoffs do not require a POSIX shell.
 
-If the source is the last pane in a primary-checkout workspace, Teleport first creates
-a shell tab there with `--no-focus`. Linked-worktree and plain-directory workspaces
-do not get replacement shells when their last pane leaves.
+For remote handoffs, if the source is the last pane in a primary-checkout workspace,
+Teleport first creates a shell tab there with `--no-focus`. Linked-worktree and
+plain-directory workspaces do not get replacement shells when their last pane leaves.
 
 Remote commands select the destination's saved Herdr machine. If the destination
 hosts the App window for a remote source, Teleport instead verifies the source's
