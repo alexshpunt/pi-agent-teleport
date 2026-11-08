@@ -10,7 +10,7 @@ import { ownsExecution, registerTeleportOutput, type TeleportExecution, type Tel
 import { createManagedWorktree, prepareHerdrDestination, preserveHerdrSourceWorkspace, readState, reconcileState, removeManagedWorktree, writeState, type Resource } from "./core.ts";
 import { appConnection, assertHerdrContext, getHerdrContext, guardedLaunch, powershellCommand, powershellQuote, runHerdr, type HerdrContext } from "./herdr.ts";
 import { awaitHerdrArrival, preflightSession, writeReadiness } from "./readiness.ts";
-import { UnknownRemoteOutcome, agentDirectory, piCommand, confirmArrival, extensionFile, parseTarget, probeRemote, qualifyLocation, remoteMachine, requestController, runtimeFingerprint, shellQuote as quote, startAppSourceCleanup, startRemoteMove, workerFile } from "./remote.ts";
+import { UnknownRemoteOutcome, agentDirectory, piCommand, arrivalGuardFile, type ModelIdentity, confirmArrival, extensionFile, parseTarget, probeRemote, qualifyLocation, remoteMachine, requestController, runtimeFingerprint, shellQuote as quote, startAppSourceCleanup, startRemoteMove, workerFile } from "./remote.ts";
 
 function dataDir(sessionId: string): string { return join(process.env.PI_CODING_AGENT_DIR ?? join(process.env.HOME ?? homedir(), ".pi", "agent"), "teleport", sessionId); }
 function serialize(ctx: ExtensionCommandContext, target: string): { source: string; destination: string } {
@@ -86,9 +86,17 @@ export default function teleport(pi: ExtensionAPI) {
   }
 
   /** Describe why this Pi process cannot continue a teleported session, or undefined when it can. */
-  async function destinationProblem(ctx: ExtensionContext): Promise<string | undefined> {
+  async function destinationProblem(ctx: ExtensionContext, expected?: ModelIdentity): Promise<string | undefined> {
     try {
-      if (!ctx.model) return "No model is selected at the destination. Configure a default model there before retrying.";
+      if (!expected?.provider || !expected.id) return "The source model identity is missing. Keep the source session and retry with a selected model.";
+      if (!ctx.model || ctx.model.provider !== expected.provider || ctx.model.id !== expected.id) {
+        const model = ctx.modelRegistry.find(expected.provider, expected.id);
+        if (!model || !await pi.setModel(model)) return `The destination cannot restore ${expected.provider}/${expected.id}. Configure this exact model and its authentication there before retrying.`;
+      }
+      if (!expected.thinkingLevel) return "The source thinking level is missing.";
+      if (pi.getThinkingLevel() !== expected.thinkingLevel) pi.setThinkingLevel(expected.thinkingLevel);
+      if (pi.getThinkingLevel() !== expected.thinkingLevel) return `The destination cannot restore thinking level ${expected.thinkingLevel}.`;
+      if (!ctx.model || ctx.model.provider !== expected.provider || ctx.model.id !== expected.id) return `The destination cannot restore ${expected.provider}/${expected.id}.`;
       const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
       if (!auth.ok) return `Authentication is unavailable for ${ctx.model.provider}/${ctx.model.id} at the destination: ${auth.error}. Configure it there before retrying.`;
       const selected = pi.getAllTools().find((tool) => tool.name === "teleport");
@@ -96,10 +104,14 @@ export default function teleport(pi: ExtensionAPI) {
     } catch (error) { return error instanceof Error ? error.message : String(error); }
   }
 
+  function selectedModel(ctx: ExtensionContext): ModelIdentity {
+    if (!ctx.model?.provider || !ctx.model.id) throw new Error("Select a model before teleporting; the source has not moved.");
+    return { provider: ctx.model.provider, id: ctx.model.id, thinkingLevel: pi.getThinkingLevel() };
+  }
   /** Start a separate Pi at the destination with a copy of this session; throw its exact failure. */
   async function checkDestination(ctx: ExtensionCommandContext, target: string): Promise<void> {
     ctx.ui.setStatus("teleport-check", `Teleport · checking that Pi starts in ${target}`);
-    try { await preflightSession({ target, sessionText: snapshot(ctx).sessionText }); }
+    try { await preflightSession({ target, sessionText: snapshot(ctx).sessionText, expectedModel: selectedModel(ctx) }); }
     finally { ctx.ui.setStatus("teleport-check", undefined); }
   }
 
@@ -119,7 +131,7 @@ export default function teleport(pi: ExtensionAPI) {
     const remote = probeRemote(host, path, implementation);
     const id = randomUUID();
     const state = readState(dir);
-    const move = { id, host, path, ...profile, sourceCwd: ctx.cwd, sourceSession: source, sourcePid: process.pid, sessionText, sessionId, execution, sessionName: ctx.sessionManager.getSessionName(), state, stateDir: dir, herdr, fingerprint: implementation, remoteWorker: remote.worker, remoteAgentDir: remote.agentDir, localVersion: VERSION, remoteVersion: remote.version, localCommand: piCommand(), remoteCommand: remote.command, remoteCore: remote.core, remotePlatform: remote.platform };
+    const move = { id, host, path, ...profile, sourceCwd: ctx.cwd, sourceSession: source, sourcePid: process.pid, sessionText, sessionId, execution, sessionName: ctx.sessionManager.getSessionName(), state, stateDir: dir, herdr, fingerprint: implementation, remoteWorker: remote.worker, remoteAgentDir: remote.agentDir, localVersion: VERSION, remoteVersion: remote.version, localCommand: piCommand(), remoteCommand: remote.command, remoteCore: remote.core, remotePlatform: remote.platform, expectedModel: selectedModel(ctx) };
     state.pendingRemote = { id, receipt: join(dir, "bridges", id, "result.json") };
     writeState(dir, state);
     // Keep the captured source state independent from the in-flight marker.
@@ -153,7 +165,7 @@ export default function teleport(pi: ExtensionAPI) {
     writeState(dir, state);
     let result: unknown;
     try {
-      result = await requestController(state.returnRoute, { action: "return", operationId: state.returnRoute.operationId, sessionText, execution, state, cwd: ctx.cwd, sourcePid: process.pid, sessionName: ctx.sessionManager.getSessionName() });
+      result = await requestController(state.returnRoute, { action: "return", operationId: state.returnRoute.operationId, sessionText, execution, state, cwd: ctx.cwd, sourcePid: process.pid, expectedModel: selectedModel(ctx), sessionName: ctx.sessionManager.getSessionName() });
     } catch (error) {
       const uncertain = error instanceof UnknownRemoteOutcome;
       try { writeFileSync(receipt, JSON.stringify({ ok: false, uncertain, error: String(error) }), { mode: 0o600 }); } catch { /* The persisted pending marker still fences this source. */ }
@@ -176,6 +188,7 @@ export default function teleport(pi: ExtensionAPI) {
     if (parsed.host) { await jumpRemote(ctx, parsed.host, parsed.path, execution); return; }
     const target = realpathSync(parsed.path);
     const context = getHerdrContext();
+    const expectedModel = selectedModel(ctx);
     // In-process replacement disposes this session before the destination starts. Prove the destination starts first.
     if (!context) await checkDestination(ctx, target);
     const { source, destination } = serialize(ctx, target);
@@ -193,8 +206,8 @@ export default function teleport(pi: ExtensionAPI) {
         const resource = Object.values(state.resources).find((resource) => resource.machine === state.machine && resource.path === target);
         prepared = prepareHerdrDestination(context, target, resource?.herdr, ctx.sessionManager.getSessionName());
         const location = prepared.location;
-        const continuation = Buffer.from(JSON.stringify({ execution, from: qualifyLocation(sourceCwd, state.machine), to: qualifyLocation(target, state.machine), receipt }), "utf8").toString("base64url");
-        runHerdr(context, ["pane", "run", location.paneId, guardedLaunch([...(context.backend === "app" || process.platform === "win32" ? piCommand() : ["pi"]), "--approve", "--session", destination], receipt, { PI_CODING_AGENT_DIR: agentDirectory(), PI_TELEPORT_CONTINUATION: continuation, PI_TELEPORT_APP_CONTEXT: process.env.PI_TELEPORT_APP_CONTEXT || "" })]);
+        const continuation = Buffer.from(JSON.stringify({ execution, from: qualifyLocation(sourceCwd, state.machine), to: qualifyLocation(target, state.machine), receipt, expectedModel: selectedModel(ctx) }), "utf8").toString("base64url");
+        runHerdr(context, ["pane", "run", location.paneId, guardedLaunch([...(context.backend === "app" || process.platform === "win32" ? piCommand() : ["pi"]), "--extension", arrivalGuardFile, "--approve", "--session", destination, "/__teleport_arrival"], receipt, { PI_CODING_AGENT_DIR: agentDirectory(), PI_TELEPORT_CONTINUATION: continuation, PI_TELEPORT_APP_CONTEXT: process.env.PI_TELEPORT_APP_CONTEXT || "" })]);
         // The destination stays gated until this commit; the source retires only after its own readiness verdict.
         await awaitHerdrArrival(context, location.paneId, destination, receipt);
         state = readState(dir);
@@ -222,8 +235,33 @@ export default function teleport(pi: ExtensionAPI) {
     }
 
     let started = false;
-    const result = await ctx.switchSession(destination, { withSession: async (next) => {
+    process.env.PI_TELEPORT_LOCAL_MODEL = JSON.stringify({ sessionFile: destination, expectedModel });
+    let result: { cancelled: boolean };
+    try { result = await ctx.switchSession(destination, { withSession: async (next) => {
       started = true;
+      delete process.env.PI_TELEPORT_LOCAL_MODEL;
+      let auth: Awaited<ReturnType<typeof next.modelRegistry.getApiKeyAndHeaders>> | undefined;
+      try {
+        if (next.model && next.model.provider === expectedModel.provider && next.model.id === expectedModel.id && next.thinkingLevel === expectedModel.thinkingLevel) auth = await next.modelRegistry.getApiKeyAndHeaders(next.model);
+      } catch { /* Treat an authentication lookup failure as a failed handoff. */ }
+      if (!auth?.ok) {
+        const message = `Teleport could not restore ${expectedModel.provider}/${expectedModel.id} with thinking level ${expectedModel.thinkingLevel}. Source session: ${source}`;
+        process.env.PI_TELEPORT_LOCAL_MODEL = JSON.stringify({ sessionFile: source, expectedModel });
+        try {
+          const rollback = await next.switchSession(source, { withSession: async (restored) => {
+            delete process.env.PI_TELEPORT_LOCAL_MODEL;
+            const current = readState(dir);
+            current.active = { cwd: sourceCwd, sessionFile: source };
+            delete current.transition;
+            writeState(dir, current);
+            restored.ui.notify(message, "error");
+            await restored.sendMessage({ customType: "pi-agent-teleport-failure", content: message, display: false, details: { outcome: { ...execution, status: "failed", text: message } satisfies TeleportOutcome } }, { triggerTurn: true, deliverAs: "followUp" });
+          }});
+          if (rollback.cancelled) next.ui.notify(message, "error");
+        } catch (error) { console.error(`${message}\nRollback failed: ${String(error)}`); }
+        finally { delete process.env.PI_TELEPORT_LOCAL_MODEL; }
+        return;
+      }
       const current = readState(dir);
       current.active = { cwd: target, sessionFile: destination };
       current.history.push({ from: qualifyLocation(sourceCwd, current.machine), to: qualifyLocation(target, current.machine), at: Date.now(), status: "completed" });
@@ -237,7 +275,7 @@ export default function teleport(pi: ExtensionAPI) {
         display: false,
         details: { outcome: { ...execution, status: "completed", text: `Agent teleported: ${sourceCwd} → ${target}` } satisfies TeleportOutcome },
       }, { triggerTurn: true, deliverAs: "followUp" });
-    }});
+    }}); } finally { delete process.env.PI_TELEPORT_LOCAL_MODEL; }
     if (result.cancelled || !started) { rmSync(destination, { force: true }); state = readState(dir); delete state.transition; writeState(dir, state); throw new Error("Teleport was cancelled."); }
   }
 
@@ -432,14 +470,34 @@ export default function teleport(pi: ExtensionAPI) {
     sessionId = ctx.sessionManager.getSessionId();
     dir = dataDir(sessionId);
   });
-  // Pi emits resources_discover only after every extension's session_start has finished.
-  // Readiness is reported from here, so a later startup failure cannot strand the agent.
+  // The initial arrival command runs only after Pi has finished every startup hook.
+  pi.registerCommand("__teleport_arrival", {
+    description: "Complete a pending Teleport arrival",
+    handler: async (_args, ctx) => {
+      if (process.env.PI_TELEPORT_PREFLIGHT || process.env.PI_TELEPORT_HANDOFF || process.env.PI_TELEPORT_CONTINUATION) await completeStartup(ctx);
+    },
+  });
   pi.on("resources_discover", async (_event, ctx) => {
+    if (process.env.PI_TELEPORT_PREFLIGHT || process.env.PI_TELEPORT_HANDOFF || process.env.PI_TELEPORT_CONTINUATION) return;
+    const localModel = process.env.PI_TELEPORT_LOCAL_MODEL;
+    if (localModel) {
+      const { sessionFile, expectedModel } = JSON.parse(localModel) as { sessionFile: string; expectedModel: ModelIdentity };
+      if (ctx.sessionManager.getSessionFile() === sessionFile) {
+        const model = ctx.modelRegistry.find(expectedModel.provider, expectedModel.id);
+        if (model && await pi.setModel(model)) pi.setThinkingLevel(expectedModel.thinkingLevel);
+        return;
+      }
+    }
+    await completeStartup(ctx);
+  });
+  async function completeStartup(ctx: ExtensionContext) {
     const preflight = process.env.PI_TELEPORT_PREFLIGHT;
     if (preflight) {
       // A disposable check process: report the verdict and touch no Teleport state.
       delete process.env.PI_TELEPORT_PREFLIGHT;
-      const problem = await destinationProblem(ctx);
+      const expected = process.env.PI_TELEPORT_EXPECTED_MODEL ? JSON.parse(process.env.PI_TELEPORT_EXPECTED_MODEL) : undefined;
+      delete process.env.PI_TELEPORT_EXPECTED_MODEL;
+      const problem = await destinationProblem(ctx, expected);
       writeReadiness(preflight, problem ? { ok: false, error: problem } : { ok: true, pid: process.pid, cwd: realpathSync(process.cwd()), sessionFile: ctx.sessionManager.getSessionFile() ?? "" });
       return;
     }
@@ -455,7 +513,7 @@ export default function teleport(pi: ExtensionAPI) {
         if (!arrivalExecution || !ownsExecution(ctx, arrivalExecution)) throw new Error("Teleport arrival does not own an execution on this session branch.");
         herdr = getHerdrContext();
         if (!herdr) throw new Error("Destination Pi is not running in its own native Herdr pane.");
-        const problem = await destinationProblem(ctx);
+        const problem = await destinationProblem(ctx, handoff.expectedModel);
         if (problem) throw new Error(problem);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -482,13 +540,13 @@ export default function teleport(pi: ExtensionAPI) {
     // The source process owns the pending handoff. Report readiness, then do not
     // reconcile or start another turn until the source commits this destination.
     if (encodedContinuation) {
-      const { receipt } = JSON.parse(Buffer.from(encodedContinuation, "base64url").toString("utf8")) as { receipt?: string };
+      const { receipt, expectedModel } = JSON.parse(Buffer.from(encodedContinuation, "base64url").toString("utf8")) as { receipt?: string; expectedModel?: ModelIdentity };
       const closeArrival = (message: string) => {
         delete process.env.PI_TELEPORT_CONTINUATION;
         ctx.ui.notify(`Teleport arrival not committed: ${message}`, "error");
         ctx.shutdown();
       };
-      const problem = await destinationProblem(ctx);
+      const problem = await destinationProblem(ctx, expectedModel);
       try {
         if (receipt) writeReadiness(receipt, problem ? { ok: false, error: problem } : { ok: true, pid: process.pid, cwd: realpathSync(process.cwd()), sessionFile: ctx.sessionManager.getSessionFile() ?? "" });
       } catch (error) { closeArrival(`Could not report readiness: ${String(error)}`); return; }
@@ -527,5 +585,5 @@ export default function teleport(pi: ExtensionAPI) {
         details: { outcome: { ...continuation.execution, status: "completed", text: `Agent teleported: ${continuation.from} → ${continuation.to}` } satisfies TeleportOutcome },
       }, { triggerTurn: true, deliverAs: "followUp" });
     }
-  });
+  }
 }

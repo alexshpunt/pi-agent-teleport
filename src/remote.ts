@@ -12,6 +12,7 @@ import { discoverAppDesktop } from "./app.ts";
 
 const sourceDir = dirname(fileURLToPath(import.meta.url));
 export const extensionFile = join(sourceDir, "index.ts");
+export const arrivalGuardFile = join(sourceDir, "arrival-guard.ts");
 export const workerFile = join(sourceDir, "bridge.ts");
 export const MAX_PACKET = 64 * 1024 * 1024;
 
@@ -24,6 +25,7 @@ export function piCommand(): string[] {
 /** An unconfirmed commit must leave the source idle, not launch a competing continuation. */
 export class UnknownRemoteOutcome extends Error {}
 
+export type ModelIdentity = { provider: string; id: string; thinkingLevel: ReturnType<import("@earendil-works/pi-coding-agent").ExtensionAPI["getThinkingLevel"]> };
 /** A private return channel, carried only in Teleport's mode-0600 state. */
 export type ReturnRoute = { socket: string; token: string; operationId: string; previous: string };
 /** A destination's exact persisted session and native Herdr pane. */
@@ -34,7 +36,7 @@ export type RemoteMove = {
   sessionId: string; sessionText: string; sessionName?: string; state: TeleportState; execution: TeleportExecution;
   sourceCwd: string; sourceSession: string; sourcePid: number; stateDir: string; herdr: HerdrContext;
   fingerprint: string; remoteWorker: string; remoteAgentDir: string; localVersion: string; remoteVersion: string;
-  localCommand?: string[]; remoteCommand?: string[]; remoteCore?: HerdrContext; remotePlatform?: NodeJS.Platform; desktop?: boolean;
+  localCommand?: string[]; remoteCommand?: string[]; remoteCore?: HerdrContext; remotePlatform?: NodeJS.Platform; desktop?: boolean; expectedModel: ModelIdentity;
 };
 
 /** Resolve local paths or a trusted OpenSSH alias with an absolute remote path. */
@@ -66,7 +68,7 @@ export function fingerprintFiles(files: Array<{ name: string; content: string }>
 
 /** Fingerprint executable Teleport files, not Pi or unrelated extensions. */
 export function runtimeFingerprint(): string {
-  return fingerprintFiles(["index.ts", "core.ts", "herdr.ts", "app.ts", "process-info.ps1", "readiness.ts", "remote.ts", "bridge.ts", "output.ts"].map((name) => ({ name, content: readFileSync(join(sourceDir, name), "utf8") })));
+  return fingerprintFiles(["index.ts", "arrival-guard.ts", "core.ts", "herdr.ts", "app.ts", "process-info.ps1", "readiness.ts", "remote.ts", "bridge.ts", "output.ts"].map((name) => ({ name, content: readFileSync(join(sourceDir, name), "utf8") })));
 }
 
 /** Preserve every conversation entry and the session ID while relocating its header. */

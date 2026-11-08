@@ -42,7 +42,7 @@ function arrival(configure?: (input: Parameters<typeof stageArrival>[0], stateDi
   previous.history.push({ from: "/earlier", to: "/source", at: 1, status: "completed" });
   writeState(stateDir, previous);
   const input: Parameters<typeof stageArrival>[0] = {
-    operationId: randomUUID(), sessionId,
+    operationId: randomUUID(), sessionId, expectedModel: { provider: "test", id: "model", thinkingLevel: "off" },
     execution: { sessionId, toolCallId: "move", parentToolCallId: "move" },
     sessionText: JSON.stringify({ type: "session", version: 3, id: sessionId, cwd: "/source" }) + "\n",
     path: cwd, state: previous, connection: { session: "test", workspaceId: "", paneId: "", tabId: "" },

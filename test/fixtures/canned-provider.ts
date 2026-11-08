@@ -5,12 +5,12 @@ const REPLY = "Continuing at the destination.";
 
 /** A local model for real destination Pi processes, so handoff tests make no network calls. */
 export default function cannedProvider(pi: ExtensionAPI) {
-  pi.registerProvider("canned", {
+  for (const [provider, id] of [["canned", "canned-model"], ["scripted", "scripted-model"]]) pi.registerProvider(provider, {
     name: "Canned destination provider",
     baseUrl: "http://canned.invalid",
     apiKey: "local",
     api: "openai-completions",
-    models: [{ id: "canned-model", name: "Canned model", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }],
+    models: [{ id, name: "Canned model", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }],
     streamSimple: (model) => {
       const stream = createAssistantMessageEventStream();
       const message: AssistantMessage = {

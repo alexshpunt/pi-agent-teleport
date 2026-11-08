@@ -51,9 +51,10 @@ idle and inspect the handoff before retrying, as described below.
 
 Without Herdr, Teleport records a prepared transition, builds a destination session
 with the same session ID and full conversation, and switches Pi to it. It removes
-the source session only after the switch succeeds. A hidden continuation starts the
-next turn in the destination context. A cancelled or failed switch removes the
-prepared destination and leaves the source intact.
+the source session only after the replacement runtime restores the selected model,
+thinking level and authentication. A hidden continuation starts the next turn in
+the destination context. If restoration fails, Teleport retains the source and
+attempts to switch back; an unsuccessful rollback retains both session files.
 
 ## Native Herdr integration
 
@@ -98,9 +99,15 @@ are not transferred.
 
 A destination readiness callback must match the operation, session ID, session file,
 cwd, agent directory and owned pane. Teleport also checks its native foreground
-process and resolves the destination's own model authentication before acknowledging
-readiness. Only a durable commit releases its continuation and permits source retirement.
+process, restores the source's selected provider, model ID and thinking level after
+all startup hooks, and resolves that selection's authentication before acknowledging
+readiness. It rejects a fallback or unavailable authentication and retains the source.
+Only a durable commit releases its continuation and permits source retirement.
 A lost readiness reply does not override an already published commit.
+
+For a virtual model, Teleport verifies the virtual selection and its provider's
+authentication. The router can choose different physical models for later requests,
+so this check cannot establish credentials for every possible route.
 
 A detached controller on the original computer survives source Pi retirement.
 A locally initiated SSH connection forwards a private remote Unix socket to this
