@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { parseArgs } from "@earendil-works/pi-coding-agent";
 import { readHerdrPane, runHerdr, shellOwnsForeground, withOutput, type HerdrContext } from "./herdr.ts";
 import { hasSessionProcess, piCommand, arrivalGuardFile, type ModelIdentity } from "./remote.ts";
@@ -51,6 +51,12 @@ export async function awaitHerdrArrival(context: HerdrContext, paneId: string, s
   }
 }
 
+// Pi resolves CLI resource paths once, against the directory where it started.
+// Keep that directory across extension reloads and in-process session switches.
+const launchCwdKey = Symbol.for("pi-agent-teleport.launch-cwd");
+const processGlobals = globalThis as typeof globalThis & { [launchCwdKey]?: string };
+const launchCwd = processGlobals[launchCwdKey] ??= process.cwd();
+
 const SESSION_FLAGS_WITH_VALUE = new Set(["--session", "--session-id", "--fork", "--export", "--name", "-n"]);
 const SESSION_FLAGS = new Set(["--continue", "-c", "--resume", "-r", "--no-session", "--print", "-p", "--help", "-h", "--version", "-v"]);
 const isValue = (next: string | undefined) => next !== undefined && !next.startsWith("-");
@@ -59,7 +65,7 @@ const isValue = (next: string | undefined) => next !== undefined && !next.starts
  * Keep the current process's runtime flags, such as extensions, models, tools and trust,
  * and drop session selection, output mode and prompt messages.
  */
-export function preflightArguments(argv: string[]): string[] {
+export function preflightArguments(argv: string[], launchCwd?: string): string[] {
   const kept: string[] = [];
   let positional = 0;
   for (let index = 0; index < argv.length; index++) {
@@ -73,6 +79,11 @@ export function preflightArguments(argv: string[]): string[] {
     if (SESSION_FLAGS_WITH_VALUE.has(arg)) { if (index + 1 < argv.length) index++; continue; }
     if (arg === "--mode" || arg === "--tui-mode") { if (isValue(argv[index + 1])) index++; continue; }
     if (arg === "--list-models") { if (isValue(argv[index + 1]) && !argv[index + 1].startsWith("@")) index++; continue; }
+    if (launchCwd && ["--extension", "-e", "--skill", "--prompt-template", "--theme"].includes(arg) && index + 1 < argv.length) {
+      const value = argv[++index];
+      kept.push(arg, /^(?:npm|git|github|https?|ssh|builtin|file):/.test(value) || value.startsWith("~") ? value : resolve(launchCwd, value));
+      continue;
+    }
     kept.push(arg);
   }
   return kept;
@@ -96,8 +107,7 @@ export async function preflightSession(input: { target: string; sessionText: str
     // The check must not register as an agent in the caller's terminal or join a handoff.
     for (const name of Object.keys(env)) if (name.startsWith("HERDR_") || name.startsWith("HC_") || name === "PI_TELEPORT_CONTINUATION" || name === "PI_TELEPORT_HANDOFF" || name === "PI_TELEPORT_LOCAL_MODEL") delete env[name];
     const [command, ...prefix] = piCommand();
-    // Relative CLI paths resolve against this process's launch directory, as in the current runtime.
-    const child = spawn(command, [...prefix, ...preflightArguments(process.argv.slice(2)), "--extension", arrivalGuardFile, "--mode", "rpc", "--session", session], { cwd: process.cwd(), env, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(command, [...prefix, ...preflightArguments(process.argv.slice(2), launchCwd), "--extension", arrivalGuardFile, "--mode", "rpc", "--session", session], { cwd: input.target, env, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     let buffered = "";
