@@ -17,6 +17,10 @@ describe("preflight arguments", () => {
     ])).toEqual(["--approve", "--extension", "./ext.ts", "--model", "fake/model", "--thinking", "high", "--custom-flag", "value"]);
   });
 
+  test("resolve relative resource arguments against the original launch directory", () => {
+    expect(preflightArguments(["-e", "./ext.ts", "--skill", "./skill", "--theme", "builtin:dark"], "/launch"))
+      .toEqual(["-e", "/launch/ext.ts", "--skill", "/launch/skill", "--theme", "builtin:dark"]);
+  });
   test("drop a print prompt and everything after --", () => {
     expect(preflightArguments(["--no-extensions", "-e", "a.ts", "-p", "hello", "--", "--model", "x"])).toEqual(["--no-extensions", "-e", "a.ts"]);
   });
@@ -87,6 +91,24 @@ describe("Herdr arrival readiness", () => {
       child.kill();
       await exited;
     }
+  });
+  test("preflight starts in the destination directory", async () => {
+    const script = join(dir, "cwd-probe.cjs");
+    writeFileSync(script, `
+      const { writeFileSync } = require("node:fs");
+      process.stdin.once("data", () => {
+        writeFileSync(process.env.PI_TELEPORT_PREFLIGHT, JSON.stringify({ ok: true, pid: process.pid, cwd: process.cwd(), sessionFile: "fixture" }));
+        writeFileSync(${JSON.stringify(join(dir, "cwd"))}, process.cwd());
+        process.stdout.write(JSON.stringify({ type: "response", id: "teleport-preflight" }) + "\\n");
+      });
+      process.stdin.on("end", () => process.exit(0));
+    `);
+    const argv = process.argv;
+    try {
+      process.argv = [process.execPath, script];
+      await preflightSession({ target: dir, expectedModel: { provider: "test", id: "model", thinkingLevel: "off" }, sessionText: JSON.stringify({ type: "session", version: 3, id: "fixture", cwd: dir }) + "\n" });
+      expect(readFileSync(join(dir, "cwd"), "utf8")).toBe(dir);
+    } finally { process.argv = argv; }
   });
   test("preflight waits for its startup response without a deadline", async () => {
     const started = join(dir, "probe-started");
