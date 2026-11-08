@@ -1,6 +1,6 @@
 {
   "name": "pi-agent-teleport",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "Move a running Pi Coding Agent session between directories, Git worktrees, and remote machines",
   "keywords": [
     "pi-package",
@@ -62,7 +62,7 @@
   },
   "scripts": {
     "test": "vitest run src",
-    "test:integration": "pi-test run -- vitest run --config vitest.integration.config.ts",
+    "test:integration": "pi-test run -- vitest run --config vitest.integration.config.ts --exclude test/model-handoff.integration.test.ts && vitest run --config vitest.integration.config.ts test/model-handoff.integration.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
