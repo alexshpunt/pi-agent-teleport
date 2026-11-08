@@ -316,7 +316,7 @@ export default function teleport(pi: ExtensionAPI) {
     label: "Teleport",
     description: [
       "Use teleport to move this persisted Pi session between local directories, Git worktrees, and remote machines.",
-      "For remote moves, use jump with an ssh://SSH_ALIAS/absolute/directory target, then back to return through the recorded SSH channel. Remote moves require Herdr on both machines and the current Teleport installation on the destination. Do not copy provider credentials or change Pi versions to make a move.",
+      "For remote moves, use jump with an ssh://SSH_ALIAS/absolute/directory target, then back to return through the recorded SSH channel. Remote moves require Herdr on both machines and the current Teleport installation on the destination. Do not change Pi versions to make a move.",
       "Use Teleport whenever work needs to continue from another folder or repository; use create followed by jump when a feature or fix should be isolated in its own worktree.",
       "Use back to return, then remove to safely clean up a Teleport-owned worktree. Remove requires resourceId from create or history. Prefer this tool over shell cd because Teleport moves the active session and preserves its navigation history.",
       "Inside Herdr, create uses its configured worktree paths and grouped workspaces; jump and back continue Pi in the checkout workspace. Remove cleans up the checkout and its idle workspace in the same Herdr session. Do not create extra Herdr tabs yourself.",
