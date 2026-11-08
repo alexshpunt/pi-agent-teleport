@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { mergeMachineResources, prepareHerdrArrival, preserveHerdrSourceWorkspace, readState, writeState, type TeleportState } from "./core.ts";
 import { assertHerdrContext, guardedLaunch, readHerdrPane, runHerdr, shellOwnsForeground, withOutput, type HerdrContext } from "./herdr.ts";
 import type { TeleportExecution } from "./output.ts";
-import { agentDirectory, requestController, MAX_PACKET, hasSessionProcess, qualifyLocation, relocateSession, runtimeFingerprint, UnknownRemoteOutcome, remoteNodeCommand, waitForForward, sshOptions, validateReady, type ReadyIdentity, type RemoteMove, type ReturnRoute } from "./remote.ts";
+import { agentDirectory, arrivalGuardFile, requestController, MAX_PACKET, hasSessionProcess, qualifyLocation, relocateSession, runtimeFingerprint, UnknownRemoteOutcome, remoteNodeCommand, waitForForward, sshOptions, validateReady, type ReadyIdentity, type RemoteMove, type ReturnRoute, type ModelIdentity } from "./remote.ts";
 
 import { runAppProxy } from "./app.ts";
 const implementation = runtimeFingerprint();
@@ -16,6 +16,7 @@ type Arrival = {
   operationId: string; sessionId: string; sessionText: string; path: string; sessionName?: string;
   state: TeleportState; connection: HerdrContext; callback: Pick<ReturnRoute, "socket" | "token">;
   fingerprint: string; from: string; to: string; execution: TeleportExecution; piCommand?: string[];
+  expectedModel: ModelIdentity;
   dormantSource?: { operationId: string; sessionFile: string; cwd: string; snapshot: string };
 };
 type Prepared = {
@@ -73,6 +74,7 @@ export function stageArrival(input: Arrival): Prepared {
   if (input.fingerprint !== implementation) throw new Error("The installed Teleport changed. Update both endpoints before retrying.");
   if (!/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(input.sessionId) || !/^[a-f0-9-]+$/.test(input.operationId)) throw new Error("Invalid Teleport handoff identity.");
   if (input.execution?.sessionId !== input.sessionId) throw new Error("Teleport execution does not match the transferred session.");
+  if (typeof input.expectedModel?.provider !== "string" || !input.expectedModel.provider || typeof input.expectedModel?.id !== "string" || !input.expectedModel.id || !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(input.expectedModel.thinkingLevel)) throw new Error("The source model identity is missing.");
   const cwd = realpathSync(input.path);
   if (!statSync(cwd).isDirectory()) throw new Error("The Teleport destination is not a directory.");
   const text = relocateSession(input.sessionText, input.sessionId, cwd);
@@ -101,12 +103,12 @@ export function stageArrival(input: Arrival): Prepared {
     state.active = { cwd, sessionFile, herdr: prepared.location };
     state.history.push({ from: input.from, to: input.to, at: Date.now(), status: "completed", toHerdr: prepared.location });
     save(join(dir, "next-state.json"), state);
-    save(join(dir, "handoff.json"), { ...input.callback, ...identity(prepared), commitFile: join(dir, "committed.json"), execution: input.execution });
+    save(join(dir, "handoff.json"), { ...input.callback, ...identity(prepared), commitFile: join(dir, "committed.json"), execution: input.execution, expectedModel: input.expectedModel });
     const appContext = input.connection.appRoute || input.connection.appSsh ? join(dir, "app-context.json") : "";
     if (appContext) save(appContext, input.connection);
     const command = input.connection.backend === "app" || process.platform === "win32" ? input.piCommand : ["pi"];
     if (!command?.length || command.some((arg) => typeof arg !== "string")) throw new Error("The arrival has no verified Pi launch command.");
-    runHerdr(input.connection, ["pane", "run", prepared.location.paneId, guardedLaunch([...command, "--approve", "--session", sessionFile], join(dir, "exited.json"), { PI_CODING_AGENT_DIR: prepared.agentDir, PI_TELEPORT_HANDOFF: join(dir, "handoff.json"), PI_TELEPORT_APP_CONTEXT: appContext })]);
+    runHerdr(input.connection, ["pane", "run", prepared.location.paneId, guardedLaunch([...command, "--extension", arrivalGuardFile, "--approve", "--session", sessionFile, "/__teleport_arrival"], join(dir, "exited.json"), { PI_CODING_AGENT_DIR: prepared.agentDir, PI_TELEPORT_HANDOFF: join(dir, "handoff.json"), PI_TELEPORT_APP_CONTEXT: appContext })]);
     return prepared;
   } catch (error) {
     if (!destination) throw new UnknownRemoteOutcome(`Native arrival preparation is unconfirmed. Inspect ${dir} and the destination Herdr state before retrying.`);
@@ -315,7 +317,7 @@ async function controller(config: string): Promise<void> {
           operationId: randomUUID(), sessionId: move.sessionId, sessionText: packet.sessionText, path: move.sourceCwd, sessionName: packet.sessionName,
           state, connection: move.herdr, callback: { socket: localSocket, token }, fingerprint: move.fingerprint,
           dormantSource: { operationId: move.id, sessionFile: move.sourceSession, cwd: move.sourceCwd, snapshot: move.sessionText },
-          from: qualifyLocation(packet.cwd, move.host), to: qualifyLocation(move.sourceCwd, state.machine), execution: packet.execution, piCommand: move.localCommand,
+          from: qualifyLocation(packet.cwd, move.host), to: qualifyLocation(move.sourceCwd, state.machine), execution: packet.execution, expectedModel: packet.expectedModel, piCommand: move.localCommand,
         };
         arrival = stageArrival(input);
         await awaitReady(arrival, false);
@@ -454,7 +456,7 @@ async function controller(config: string): Promise<void> {
       : connection(move.remoteSession);
     outward = await remoteEndpoint<Prepared>(move, "stage", {
       operationId: move.id, sessionId: move.sessionId, sessionText: move.sessionText, path: move.path, sessionName: move.sessionName,
-      state, execution: move.execution, connection: remoteConnection, piCommand: move.remoteCommand, callback: { socket: reservation.socket, token }, fingerprint: move.fingerprint, from: source, to: target,
+      state, execution: move.execution, expectedModel: move.expectedModel, connection: remoteConnection, piCommand: move.remoteCommand, callback: { socket: reservation.socket, token }, fingerprint: move.fingerprint, from: source, to: target,
     } satisfies Arrival);
     save(join(dirname(config), "destination.json"), outward);
     await awaitReady(outward, true);
