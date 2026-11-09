@@ -42,7 +42,7 @@ test.skipIf(!available)("PowerShell reports a missing executable instead of leav
   expect(JSON.parse(readFileSync(receipt, "utf8"))).toMatchObject({ ok: false, error: expect.any(String) });
 });
 
-test.skipIf(!available)("Windows source cleanup closes the source pane before removing its literal session file", () => {
+test.skipIf(!available)("Windows pane cleanup leaves transcript cleanup to the independent worker", () => {
   const directory = mkdtempSync(join(tmpdir(), "teleport cleanup ' & [] "));
   fixtures.push(directory);
   const session = join(directory, "source.jsonl");
@@ -53,9 +53,17 @@ test.skipIf(!available)("Windows source cleanup closes the source pane before re
     buildSourcePaneCleanup("pane-123", 2_147_483_647, session, "win32");
   execFileSync(powershell, ["-NoLogo", "-NoProfile", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { timeout: 10_000 });
   expect(JSON.parse(readFileSync(output, "utf8"))).toEqual(["pane", "close", "pane-123"]);
-  expect(existsSync(session)).toBe(false);
+  expect(existsSync(session)).toBe(true);
 });
 
+test.skipIf(process.platform === "win32")("source cleanup retains the transcript while its process is still alive", () => {
+  const directory = mkdtempSync(join(tmpdir(), "teleport-cleanup-live-"));
+  fixtures.push(directory);
+  const session = join(directory, "source.jsonl");
+  writeFileSync(session, "session");
+  execFileSync("sh", ["-c", buildSourcePaneCleanup("test-pane", process.pid, session, "linux")], { timeout: 10_000 });
+  expect(existsSync(session)).toBe(true);
+}, 12_000);
 const fishAvailable = spawnSync("fish", ["--version"], { timeout: 5_000 }).status === 0;
 test.skipIf(!fishAvailable)("launching through fish preserves nested quotes and shell metacharacters", () => {
   const directory = mkdtempSync(join(tmpdir(), "teleport-fish-'"));

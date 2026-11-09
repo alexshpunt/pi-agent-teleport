@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { expect, test } from "vitest";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { retireAppSource } from "../src/bridge.ts";
-import { startAppSourceCleanup } from "../src/remote.ts";
+import { startAppSourceCleanup, startSessionCleanup } from "../src/remote.ts";
 import { runApp, appSpaces } from "../src/app.ts";
 import { createManagedWorktree, prepareHerdrDestination, preserveHerdrSourceWorkspace, readState, removeManagedWorktree } from "../src/core.ts";
 import { coreEnvironment, getHerdrContext, guardedLaunch, herdrLocation, isHerdrShell, readHerdrPane, runHerdr, type HerdrContext } from "../src/herdr.ts";
@@ -49,14 +49,12 @@ test.runIf(process.env.PI_TEST_HERDR_APP === "1")("the real App adapter creates,
     const before = selection();
     const stateDir = join(directory, "state");
     const resource = createManagedWorktree({ repo, branch: "owned", path: join(directory, "checkout"), stateDir, herdr: source });
-    spaces.add(resource.herdr!.workspaceId);
-    expect(resource.herdr!.parentWorkspaceId).toBe(source.workspaceId);
+    expect(resource.herdr).toBeUndefined();
     expect(existsSync(join(resource.path, ".git"))).toBe(true);
-    if (process.env.PI_TEST_APP_BACKGROUND === "1") expect(selection()).toEqual(before);
-    else expect(selection().slice(0, 2)).toEqual([resource.herdr!.workspaceId, resource.herdr!.tabId]);
-    await until(() => isHerdrShell(source, resource.herdr!.paneId) ? true : undefined);
-    const destination = prepareHerdrDestination(source, resource.path, resource.herdr, "Session name");
-    expect(destination.location.paneId).toBe(resource.herdr!.paneId);
+    expect(selection()).toEqual(before);
+    const destination = prepareHerdrDestination(source, resource.path, undefined, "Session name");
+    spaces.add(destination.location.workspaceId);
+    await until(() => isHerdrShell(source, destination.location.paneId) ? true : undefined);
     const ownSpace = appSpaces(source).find((space) => space.id === destination.location.workspaceId)!;
     expect(ownSpace.tabs).toHaveLength(1);
     expect(ownSpace.tabs[0].name).toBe("Session name");
@@ -86,14 +84,12 @@ test.runIf(process.env.PI_TEST_HERDR_APP === "1")("the real App adapter creates,
       });
       throw new Error(JSON.stringify({ error: String(error), expected: { pid: programPid, cwd: resource.path }, observation, program: proc(programPid!), shell: proc(observation.shell_pid), observer: proc(process.pid) }));
     }
-    expect(() => removeManagedWorktree({ repo, id: resource.id, stateDir, herdr: source })).toThrow();
-    expect(existsSync(resource.path)).toBe(true);
     process.kill(programPid!, "SIGTERM"); programPid = undefined;
     await until(() => isHerdrShell(source, destination.location.paneId) ? true : undefined);
     removeManagedWorktree({ repo, id: resource.id, stateDir, herdr: source });
     expect(existsSync(resource.path)).toBe(false);
     expect(readState(stateDir).resources[resource.id]).toBeUndefined();
-    expect(appSpaces(source).some((space) => space.id === destination.location.workspaceId)).toBe(false);
+    expect(appSpaces(source).some((space) => space.id === destination.location.workspaceId)).toBe(true);
     preserveHerdrSourceWorkspace(source, repo);
     const sourceSession = join(directory, "source-session.jsonl");
     writeFileSync(sourceSession, "owned source transcript");
@@ -103,12 +99,13 @@ test.runIf(process.env.PI_TEST_HERDR_APP === "1")("the real App adapter creates,
     // A foreign occupant must survive a stale cleanup request, with its file intact.
     await expect(retireAppSource({ context: source, sourcePid: process.pid, cwd: repo, sessionFile: sourceSession })).rejects.toThrow();
     expect(existsSync(sourceSession)).toBe(true);
+    await startSessionCleanup(sourceSession, programPid!, repo, stateDir);
     await startAppSourceCleanup({ context: source, sourcePid: programPid, cwd: repo, sessionFile: sourceSession }, stateDir);
     try { await until(() => !existsSync(sourceSession) ? true : undefined); }
     catch (error) {
       const workers = readdirSync(join(stateDir, "cleanup")).map((id) => {
         const dir = join(stateDir, "cleanup", id);
-        return { id, log: readFileSync(join(dir, "worker.log"), "utf8"), result: existsSync(join(dir, "result.json")) ? readFileSync(join(dir, "result.json"), "utf8") : undefined };
+        return { id, log: existsSync(join(dir, "worker.log")) ? readFileSync(join(dir, "worker.log"), "utf8") : undefined, result: existsSync(join(dir, "result.json")) ? readFileSync(join(dir, "result.json"), "utf8") : undefined };
       });
       throw new Error(JSON.stringify({ error: String(error), workers }));
     }
