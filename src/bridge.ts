@@ -1,7 +1,7 @@
 import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { createServer, type Socket } from "node:net";
+import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -139,6 +139,23 @@ export function abortArrival(prepared: Prepared): void {
   rmSync(prepared.dir, { recursive: true, force: true });
 }
 
+export type SessionCleanup = { sourcePid: number; sessionFile: string; dev: number; ino: number };
+
+/** Delete only the recorded transcript after its source process has exited. */
+export async function retireSessionFile(input: SessionCleanup): Promise<void> {
+  if (!Number.isSafeInteger(input.sourcePid) || input.sourcePid <= 0) throw new Error("Invalid source process identity.");
+  const deadline = Date.now() + 5_000;
+  while (true) {
+    try { process.kill(input.sourcePid, 0); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") break; throw error; }
+    if (Date.now() >= deadline) throw new Error("The source process has not exited; its transcript is retained.");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  if (!existsSync(input.sessionFile)) return;
+  const stat = lstatSync(input.sessionFile);
+  if (!stat.isFile() || stat.dev !== input.dev || stat.ino !== input.ino) throw new Error("The source transcript was replaced; it is retained.");
+  rmSync(input.sessionFile);
+}
 export type AppSourceCleanup = { context: HerdrContext; sourcePid: number; cwd: string; sessionFile: string; retireRoute?: Pick<ReturnRoute, "socket" | "token" | "operationId"> };
 
 function appSourceGone(input: AppSourceCleanup): boolean {
@@ -149,25 +166,33 @@ function assertAppSource(input: AppSourceCleanup): void {
   if (input.context.backend !== "app" || !Number.isSafeInteger(input.sourcePid) || input.sourcePid <= 0) throw new Error("Invalid App cleanup ownership.");
   assertHerdrContext(input.context);
   const info = runHerdr(input.context, ["pane", "process-info", "--pane", input.context.paneId]).process_info;
-  if (!hasSessionProcess(info?.foreground_processes, input.sourcePid, input.cwd, input.sessionFile) && !(appSourceGone(input) && shellOwnsForeground(info))) throw new Error("The source pane no longer has its recorded occupant; its transcript is retained.");
+  if (!hasSessionProcess(info?.foreground_processes, input.sourcePid, input.cwd, input.sessionFile) && !(appSourceGone(input) && shellOwnsForeground(info))) throw new Error("The source pane no longer has its recorded occupant; it was left unchanged.");
 }
 
-/** Close only the original App occupant, then remove its transcript after exit. */
+/** Close only the original App occupant and wait for its process to exit. */
 export async function retireAppSource(input: AppSourceCleanup): Promise<void> {
   assertAppSource(input);
-  runHerdr(input.context, ["pane", "close", input.context.paneId]);
+  let paneError: unknown;
+  try { runHerdr(input.context, ["pane", "close", input.context.paneId]); }
+  catch (error) { paneError = error; }
   const deadline = Date.now() + 5_000;
   while (!appSourceGone(input)) {
     if (Date.now() >= deadline) throw new Error("The source process has not exited; its transcript is retained.");
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  rmSync(input.sessionFile, { force: true });
+  if (paneError) throw paneError;
   const route = input.retireRoute || input.context.appRoute;
   if (route) await requestController(route, { action: "app-retired", operationId: route.operationId });
 }
 /** Run desktop cleanup from an independent SSH process, outside the retiring terminal's job. */
 export async function retireDesktopSource(input: AppSourceCleanup): Promise<void> {
-  assertAppSource(input);
+  if (input.context.backend !== "app" || !Number.isSafeInteger(input.sourcePid) || input.sourcePid <= 0) throw new Error("Invalid App cleanup ownership.");
+  try { assertAppSource(input); }
+  catch (error) {
+    // The source may already have exited and its terminal disappeared. Do not touch another pane.
+    if (appSourceGone(input)) return;
+    throw error;
+  }
   preserveHerdrSourceWorkspace(input.context, input.cwd);
   await retireAppSource(input);
 }
@@ -229,12 +254,35 @@ function remoteEndpoint<T = any>(move: RemoteMove, action: string, input: unknow
   });
 }
 
+/** An empty busy snapshot means process observation failed, not that another process owns the pane. */
+export function assertReadyProcess(info: { shell_owns_foreground?: boolean; foreground_processes?: Array<{ pid: number; cwd?: string; argv?: string[] }> }, pid: number, cwd: string, sessionFile: string): void {
+  if (!info?.foreground_processes?.length) throw new UnknownRemoteOutcome("Destination process observation is unavailable; its handoff remains pending.");
+  if (!hasSessionProcess(info.foreground_processes, pid, cwd, sessionFile)) {
+    const observed = info.foreground_processes.find((item) => item.pid === pid);
+    const detail = observed ? `PID ${pid} was observed, but its directory or session did not match` : `PID ${pid} was not among the observed processes`;
+    throw new Error(`The expected destination Pi is not running in its owned Herdr pane: ${detail}.`);
+  }
+}
+/** Listen locally without requiring Unix-domain socket support on Windows. */
+export async function listenController(server: Server, directory: string, platform: NodeJS.Platform = process.platform): Promise<string> {
+  const path = join(directory, "controller.sock");
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    if (platform === "win32") server.listen(0, "127.0.0.1", resolve);
+    else server.listen(path, resolve);
+  });
+  if (platform !== "win32") return path;
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Controller did not bind a loopback port.");
+  return `tcp://127.0.0.1:${address.port}`;
+}
 /** Keep an authenticated Unix-socket return bridge alive after the source Pi exits. */
 async function controller(config: string): Promise<void> {
   const move = JSON.parse(readFileSync(config, "utf8")) as RemoteMove;
+  process.env.PI_CODING_AGENT_DIR = dirname(dirname(move.stateDir));
   const receipt = join(dirname(config), "result.json");
   const localDir = mkdtempSync(join(tmpdir(), "pi-teleport-"));
-  const localSocket = join(localDir, "controller.sock");
+  let localSocket = "";
   const token = randomBytes(32).toString("hex");
   let tunnel: ChildProcess | undefined;
   let reservation: { dir: string; socket: string } | undefined;
@@ -294,7 +342,7 @@ async function controller(config: string): Promise<void> {
           let info;
           try { info = await paneProcess(arrival.expected.paneId, arrival.remote); }
           catch { throw new UnknownRemoteOutcome("Destination process observation is unavailable; its handoff remains pending."); }
-          if (!hasSessionProcess(info?.foreground_processes, packet.pid, arrival.expected.cwd, arrival.expected.sessionFile)) throw new Error("The expected destination Pi is not running in its owned Herdr pane.");
+          assertReadyProcess(info, packet.pid, arrival.expected.cwd, arrival.expected.sessionFile);
           if (arrival === pending) pending.resolve();
           socket.end(`${JSON.stringify({ ok: true })}\n`);
         } catch (error) {
@@ -415,7 +463,8 @@ async function controller(config: string): Promise<void> {
     const previousPort = windows && reservation ? Number(reservation.socket.slice("tcp://127.0.0.1:".length)) : 0;
     const dynamic = windows && !previousPort;
     const listen = windows ? `127.0.0.1:${previousPort}` : reservation!.socket;
-    const transport = spawn("ssh", [...sshOptions, "-v", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-N", "-R", `${listen}:${localSocket}`, move.host], { stdio: ["ignore", "ignore", "pipe"] });
+    const target = localSocket.startsWith("tcp://") ? localSocket.slice("tcp://".length) : localSocket;
+    const transport = spawn("ssh", [...sshOptions, "-v", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-N", "-R", `${listen}:${target}`, move.host], { stdio: ["ignore", "ignore", "pipe"] });
     tunnel = transport;
     transport.once("error", (error) => { console.error(`Teleport return channel unavailable: ${error.message}`); });
     transport.once("close", () => {
@@ -439,7 +488,7 @@ async function controller(config: string): Promise<void> {
     rmSync(localDir, { recursive: true, force: true });
   }
   try {
-    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(localSocket, resolve); });
+    localSocket = await listenController(server, localDir);
     if (move.remotePlatform !== "win32") reservation = await remoteEndpoint<{ dir: string; socket: string }>(move, "reserve", {});
     await startTunnel();
     if (!reservation) throw new Error("SSH did not reserve a return channel.");
@@ -526,6 +575,13 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
         process.stdout.write(JSON.stringify({ ok: true, result }));
       }
     } catch (error) { process.stdout.write(JSON.stringify({ ok: false, uncertain: error instanceof UnknownRemoteOutcome, error: error instanceof Error ? error.message : String(error) })); process.exitCode = 1; }
+  } else if (process.argv[2] === "cleanup-session") {
+    const config = process.argv[3];
+    const input = JSON.parse(readFileSync(config, "utf8")) as SessionCleanup;
+    retireSessionFile(input).then(
+      () => save(join(dirname(config), "result.json"), { ok: true }),
+      (error) => { save(join(dirname(config), "result.json"), { ok: false, error: String(error) }); console.error(error); process.exitCode = 1; },
+    );
   } else if (process.argv[2] === "cleanup-app") {
     const config = process.argv[3];
     const input = JSON.parse(readFileSync(config, "utf8")) as AppSourceCleanup;

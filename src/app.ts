@@ -148,6 +148,11 @@ export function appSpaces(context: HerdrContext): AppSpace[] {
     }));
 }
 
+/** Verify that the addressed window hosts this source terminal before routing a handoff. */
+export function assertAppHost(context: HerdrContext): void {
+  const matches = appSpaces(context).filter((space) => space.id === context.workspaceId && space.tabs.some((tab) => tab.id === context.tabId && tab.terminals.some((terminal) => terminal.terminal === context.paneId)));
+  if (matches.length !== 1) throw new Error("The addressed Herdr App window does not uniquely host this terminal.");
+}
 export function appSpace(context: HerdrContext, id: string): AppSpace {
   const space = appSpaces(context).find((space) => !space.machine && space.id === id);
   if (!space) throw new Error("The addressed space is not in the connected Herdr App window.");
