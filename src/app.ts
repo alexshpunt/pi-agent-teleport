@@ -1,6 +1,7 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 import { coreEnvironment, type HerdrContext } from "./herdr.ts";
 import { UnknownRemoteOutcome, sshOptions, workerFile } from "./remote.ts";
+import { defaultAppCliName, resolveAppCli, runningInWsl } from "./app-binary.ts";
 
 export type AppSpace = { id: string; name?: string; folder?: string; machine?: string | null; tabs: Array<{ id: string; name?: string; terminals: Array<{ terminal: string; pane: string }> }> };
 class AppCommandError extends Error {
@@ -47,7 +48,16 @@ catch(error){if(error.stdout)process.stdout.write(error.stdout);if(error.stderr)
       const encoded = Buffer.from(script).toString("base64");
       output = execFileSync("ssh", [...sshOptions, route.target, `node -e "eval(Buffer.from('${encoded}','base64').toString())"`], { encoding: "utf8", timeout: 60_000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
     } else {
-      output = execFileSync(context.appCli || (process.platform === "win32" ? "herdr-app.exe" : "herdr-app"), args, { encoding: "utf8", env: coreEnvironment(context), timeout: 40_000, stdio: ["ignore", "pipe", "pipe"] });
+      const options: ExecFileSyncOptionsWithStringEncoding = { encoding: "utf8", env: coreEnvironment(context), timeout: 40_000, stdio: ["ignore", "pipe", "pipe"] };
+      const program = context.appCli || defaultAppCliName();
+      try { output = execFileSync(program, args, options); }
+      catch (error) {
+        // A program that did not start ran nothing, so looking for it elsewhere and repeating the call is safe.
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        const found = resolveAppCli(context.appCli);
+        if (found === program) throw new Error(`The Herdr App command-line program "${program}" was not found. Set PI_HERDR_APP_CLI to its full path.`);
+        output = execFileSync(found, args, options);
+      }
     }
   } catch (error) {
     const stdout = (error as { stdout?: Buffer | string }).stdout?.toString();
@@ -107,6 +117,26 @@ export function discoverAppDesktop(context: HerdrContext, target: string): Herdr
   });
   if (matches.length !== 1 || (context.appMachine && context.appMachine !== matches[0].machine)) return;
   return { ...context, appMachine: matches[0].machine!, ...(context.appRoute || context.appSsh ? {} : { appSsh: route }) };
+}
+
+/**
+ * The machine under which the App lists this terminal. The App lists a WSL core's terminals as
+ * `<machine>/<id>` and the desktop's own as plain IDs; the machine is known only from the listing,
+ * by the terminal, tab and space IDs together. `PI_HERDR_APP_MACHINE` overrides (empty means the
+ * App's own machine). An ambiguous or missing match, or a failing App, gives no machine.
+ */
+export function detectAppMachine(context: HerdrContext, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (env.PI_HERDR_APP_MACHINE !== undefined) return env.PI_HERDR_APP_MACHINE || undefined;
+  if (context.appRoute || context.appSsh || !runningInWsl()) return undefined;
+  try {
+    const result = runApp(context, ["ls"]);
+    if (!Array.isArray(result.spaces)) return undefined;
+    const hosts = (space: AppSpace, prefix: string) => space.id === `${prefix}${context.workspaceId}` && Array.isArray(space.tabs) && space.tabs.some((tab) => tab.id === `${prefix}${context.tabId}` && Array.isArray(tab.terminals) && tab.terminals.some((terminal) => terminal.terminal === `${prefix}${context.paneId}`));
+    const spaces = result.spaces as AppSpace[];
+    if (spaces.some((space) => !space.machine && hosts(space, ""))) return undefined;
+    const matches = spaces.filter((space) => typeof space.machine === "string" && !!space.machine && !space.machine.includes("/") && hosts(space, `${space.machine}/`));
+    return matches.length === 1 ? matches[0].machine! : undefined;
+  } catch { return undefined; }
 }
 
 /** Negotiate with the running window, not potentially stale CLI metadata. */
