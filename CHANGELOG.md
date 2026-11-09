@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Work from a WSL terminal of the Windows Herdr App: find the App's command-line program when `herdr-app` is not on `PATH`, and detect the machine the App lists the terminal under. `PI_HERDR_APP_CLI` and `PI_HERDR_APP_MACHINE` override both.
+
 ## 0.2.10 - 2026-11-09
 
 - Create and remove Teleport-owned worktrees through Git without opening or closing Herdr panels. Keep ownership, clean-checkout and unmerged-branch safeguards.
