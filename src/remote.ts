@@ -1,6 +1,6 @@
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, posix, resolve, win32 } from "node:path";
@@ -129,12 +129,13 @@ export function requestController(route: Pick<ReturnRoute, "socket" | "token">, 
 
 /** Release an arrival only after its source publishes a durable commit, even if the readiness acknowledgement was lost. */
 export async function confirmArrival(handoff: Pick<ReturnRoute, "socket" | "token"> & { commitFile: string }, ready: Record<string, unknown>): Promise<void> {
-  if (!existsSync(handoff.commitFile)) {
-    try { await requestController(handoff, { ...ready, action: "ready" }); }
+  while (!existsSync(handoff.commitFile)) {
+    try { await requestController(handoff, { ...ready, action: "ready" }); break; }
     catch (error) {
-      // The source may have committed before this acknowledgement was delivered.
+      // Readiness is idempotent; retry only an inconclusive observation or transport.
       const transportFailure = typeof (error as NodeJS.ErrnoException).code === "string";
       if (!existsSync(handoff.commitFile) && !(error instanceof UnknownRemoteOutcome) && !transportFailure) throw error;
+      if (!existsSync(handoff.commitFile)) await new Promise((resolve) => setTimeout(resolve, 250));
     }
   }
   // A timeout alone cannot shut down a living destination. Only the durable source
@@ -255,21 +256,42 @@ export function independentProcessEnvironment(input: NodeJS.ProcessEnv = process
   return env;
 }
 
+/** Launch a worker in its own unparented core terminal, outside the caller's cleanup scope. */
+export function startCoreWorker(context: HerdrContext, cwd: string, argv: string[]): { address: string } {
+  const result = runCore(context, ["run", "--no-parent", "--outlive-parent", "--no-notify", "--bg", "--rm", "--json", "--cwd", cwd, ...argv]);
+  if (typeof result.address !== "string" || !result.address) throw new UnknownRemoteOutcome("The worker's core terminal is unconfirmed.");
+  return { address: result.address };
+}
+/** Schedule transcript cleanup independently of UI cleanup after a confirmed handoff. */
+export function startSessionCleanup(sessionFile: string, sourcePid: number, cwd: string, stateDir: string, context?: HerdrContext): Promise<void> {
+  const stat = lstatSync(sessionFile);
+  if (!stat.isFile()) throw new Error("The source transcript is not a regular file.");
+  const dir = join(stateDir, "cleanup", randomUUID());
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const config = join(dir, "session.json");
+  writeFileSync(config, JSON.stringify({ sourcePid, sessionFile, dev: stat.dev, ino: stat.ino }), { mode: 0o600, flag: "wx" });
+  if (context?.backend === "app") {
+    startCoreWorker(context, cwd, [process.execPath, "--experimental-strip-types", workerFile, "cleanup-session", config]);
+    return Promise.resolve();
+  }
+  const log = openSync(join(dir, "worker.log"), "ax", 0o600);
+  return new Promise((resolve, reject) => {
+    try {
+      const worker = spawn(process.execPath, ["--experimental-strip-types", workerFile, "cleanup-session", config], { cwd, env: independentProcessEnvironment(), detached: true, windowsHide: true, stdio: ["ignore", log, log] });
+      worker.once("error", reject);
+      worker.once("spawn", () => { worker.unref(); resolve(); });
+    } catch (error) { reject(error); }
+    finally { closeSync(log); }
+  });
+}
 /** Keep App cleanup outside the source terminal's lifetime and sweep scope. */
 export function startAppSourceCleanup(input: import("./bridge.ts").AppSourceCleanup, stateDir: string): Promise<void> {
   const dir = join(stateDir, "cleanup", randomUUID());
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const config = join(dir, "source.json");
   writeFileSync(config, JSON.stringify(input), { mode: 0o600, flag: "wx" });
-  const log = openSync(join(dir, "worker.log"), "ax", 0o600);
-  return new Promise((resolve, reject) => {
-    try {
-      const worker = spawn(process.execPath, ["--experimental-strip-types", workerFile, "cleanup-app", config], { cwd: input.cwd, env: independentProcessEnvironment(), detached: true, windowsHide: true, stdio: ["ignore", log, log] });
-      worker.once("error", reject);
-      worker.once("spawn", () => { worker.unref(); resolve(); });
-    } catch (error) { reject(error); }
-    finally { closeSync(log); }
-  });
+  startCoreWorker(input.context, input.cwd, [process.execPath, "--experimental-strip-types", workerFile, "cleanup-app", config]);
+  return Promise.resolve();
 }
 /** Start a narrow detached controller that survives retirement of the source Pi. */
 export async function startRemoteMove(move: RemoteMove): Promise<any> {
@@ -278,6 +300,11 @@ export async function startRemoteMove(move: RemoteMove): Promise<any> {
   chmodSync(dir, 0o700);
   const config = join(dir, "request.json");
   writeFileSync(config, JSON.stringify(move), { mode: 0o600, flag: "wx" });
+  if (move.herdr.backend === "app") {
+    try { startCoreWorker(move.herdr, move.sourceCwd, [process.execPath, "--experimental-strip-types", workerFile, "controller", config]); }
+    catch (error) { throw new UnknownRemoteOutcome(`Controller start is unconfirmed: ${String(error)}`); }
+    return waitForReceipt(join(dir, "result.json"));
+  }
   const log = openSync(join(dir, "controller.log"), "ax", 0o600);
   try {
     const worker = spawn(process.execPath, ["--experimental-strip-types", workerFile, "controller", config], { cwd: move.sourceCwd, env: independentProcessEnvironment(), detached: true, stdio: ["ignore", log, log] });

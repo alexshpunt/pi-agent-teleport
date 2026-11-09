@@ -10,7 +10,8 @@ import { ownsExecution, registerTeleportOutput, type TeleportExecution, type Tel
 import { createManagedWorktree, preserveHerdrSourceWorkspace, readState, reconcileState, removeManagedWorktree, writeState, type Resource } from "./core.ts";
 import { appConnection, assertHerdrContext, getHerdrContext, powershellCommand, powershellQuote, type HerdrContext } from "./herdr.ts";
 import { preflightSession, writeReadiness } from "./readiness.ts";
-import { UnknownRemoteOutcome, agentDirectory, piCommand, type ModelIdentity, confirmArrival, extensionFile, parseTarget, probeRemote, qualifyLocation, remoteMachine, requestController, runtimeFingerprint, shellQuote as quote, startAppSourceCleanup, startRemoteMove, workerFile } from "./remote.ts";
+import { assertAppHost } from "./app.ts";
+import { UnknownRemoteOutcome, agentDirectory, piCommand, type ModelIdentity, confirmArrival, extensionFile, parseTarget, probeRemote, qualifyLocation, remoteMachine, requestController, runtimeFingerprint, shellQuote as quote, startAppSourceCleanup, startRemoteMove, startSessionCleanup, workerFile } from "./remote.ts";
 
 function dataDir(sessionId: string): string { return join(process.env.PI_CODING_AGENT_DIR ?? join(process.env.HOME ?? homedir(), ".pi", "agent"), "teleport", sessionId); }
 function serialize(ctx: ExtensionCommandContext, target: string): { source: string; destination: string } {
@@ -25,20 +26,18 @@ function serialize(ctx: ExtensionCommandContext, target: string): { source: stri
   writeFileSync(destination, `${[nextHeader, ...structuredClone(ctx.sessionManager.getEntries())].map((entry) => JSON.stringify(entry)).join("\n")}\n`, { flag: "wx" });
   return { source, destination };
 }
-/** Build the detached command that closes only the source pane before cleaning its session file. */
-export function buildSourcePaneCleanup(paneId: string, sourcePid: number, sessionFile: string, platform: NodeJS.Platform = process.platform): string {
+/** Build the detached command that closes only the source pane and waits for exit. */
+export function buildSourcePaneCleanup(paneId: string, sourcePid: number, _sessionFile: string, platform: NodeJS.Platform = process.platform): string {
   if (platform === "win32") return [
     "Start-Sleep -Milliseconds 250",
     `& herdr pane close ${powershellQuote(paneId)} *> $null`,
     `for ($i = 0; $i -lt 50 -and (Get-Process -Id ${sourcePid} -ErrorAction SilentlyContinue); $i++) { Start-Sleep -Milliseconds 100 }`,
-    `Remove-Item -LiteralPath ${powershellQuote(sessionFile)} -Force -ErrorAction SilentlyContinue`,
   ].join("\n");
   return [
     "sleep 0.25",
     `herdr pane close ${quote(paneId)} >/dev/null 2>&1 || true`,
     "i=0",
     `while kill -0 ${sourcePid} 2>/dev/null && [ "$i" -lt 50 ]; do i=$((i + 1)); sleep 0.1; done`,
-    `rm -f -- ${quote(sessionFile)}`,
   ].join("; ");
 }
 
@@ -117,6 +116,8 @@ export default function teleport(pi: ExtensionAPI) {
   }
 
   async function retireSource(ctx: ExtensionCommandContext, source: string, context: HerdrContext, retireRoute?: import("./bridge.ts").AppSourceCleanup["retireRoute"]) {
+    try { await startSessionCleanup(source, process.pid, ctx.cwd, dir, context); }
+    catch (error) { notify(ctx, `Destination is running. Source session cleanup needs inspection: ${String(error)}`, "error"); }
     try { await scheduleSourceCleanup(pi, context, ctx.cwd, source, dir, retireRoute); }
     catch (error) { notify(ctx, `Destination is running. Could not close source pane ${context.paneId}: ${String(error)}`, "error"); }
     ctx.shutdown();
@@ -129,6 +130,7 @@ export default function teleport(pi: ExtensionAPI) {
     const { source, sessionText } = snapshot(ctx);
     const profile = remoteMachine(host, herdr);
     herdr = profile.sourceContext || herdr;
+    if (herdr.backend === "app") assertAppHost(herdr);
     const remote = probeRemote(host, path, implementation);
     const id = randomUUID();
     const state = readState(dir);
@@ -179,6 +181,10 @@ export default function teleport(pi: ExtensionAPI) {
     }
     try { writeFileSync(receipt, JSON.stringify(result), { mode: 0o600 }); }
     catch { notify(ctx, "Return committed. Its local receipt could not be saved; continue only at the returned destination.", "error"); }
+    if ((result as { cleanupScheduled?: boolean })?.cleanupScheduled === true) {
+      try { await startSessionCleanup(source, process.pid, ctx.cwd, dir, herdr); }
+      catch (error) { notify(ctx, `Return committed. Source session cleanup needs inspection: ${String(error)}`, "error"); }
+    }
     if ((result as { cleanupScheduled?: boolean })?.cleanupScheduled === true) ctx.shutdown();
     else await retireSource(ctx, source, herdr, state.returnRoute);
   }
@@ -326,7 +332,7 @@ export default function teleport(pi: ExtensionAPI) {
       "For remote moves, use jump with an ssh://SSH_ALIAS/absolute/directory target, then back to return through the recorded SSH channel. Remote moves require Herdr on both machines and the current Teleport installation on the destination. Do not change Pi versions to make a move.",
       "Use Teleport whenever work needs to continue from another folder or repository; use create followed by jump when a feature or fix should be isolated in its own worktree.",
       "Use back to return, then remove to safely clean up a Teleport-owned worktree. Remove requires resourceId from create or history. Prefer this tool over shell cd because Teleport moves the active session and preserves its navigation history.",
-      "Inside Herdr, create uses its configured worktree paths and grouped workspaces; jump and back continue Pi in the checkout workspace. Remove cleans up the checkout and its idle workspace in the same Herdr session. Do not create extra Herdr tabs yourself.",
+      "Local worktree operations use Git and leave Herdr panels unchanged. Local moves continue Pi in the current terminal.",
     ].join(" "),
     parameters: Type.Object({
       action: StringEnum(["jump", "back", "history", "create", "remove"] as const),
@@ -349,12 +355,12 @@ export default function teleport(pi: ExtensionAPI) {
       if (handoff) throw new Error(`A remote Teleport outcome needs inspection at ${handoff.receipt}. Keep the source idle; do not mutate its locations.`);
       if (params.action === "create") {
         if (!params.branch) throw new Error("A branch is required.");
-        const resource = createManagedWorktree({ repo: ctx.cwd, branch: params.branch, base: params.base, path: params.path, stateDir: dir, herdr: getHerdrContext() });
+        const resource = createManagedWorktree({ repo: ctx.cwd, branch: params.branch, base: params.base, path: params.path, stateDir: dir });
         return { content: [{ type: "text" as const, text: `Created worktree ${qualifyLocation(resource.path, resource.machine)}\nBranch: ${resource.branch}${resource.herdr ? `\nHerdr workspace: ${resource.herdr.workspaceId}` : ""}\nUse resourceId: ${resource.id} to remove this worktree` }], details: { resource } };
       }
       if (params.action === "remove") {
         if (!params.resourceId) throw new Error("A resourceId is required.");
-        const resource = removeManagedWorktree({ repo: ctx.cwd, id: params.resourceId, stateDir: dir, herdr: getHerdrContext() });
+        const resource = removeManagedWorktree({ repo: ctx.cwd, id: params.resourceId, stateDir: dir });
         return { content: [{ type: "text" as const, text: formatRemovedWorktree(resource) }], details: { resource } };
       }
       if (params.action === "jump" && !params.target) throw new Error("A target directory is required.");
