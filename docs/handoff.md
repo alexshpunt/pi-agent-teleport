@@ -60,11 +60,10 @@ both session files.
 
 ## Native Herdr integration
 
-Herdr detection requires `HERDR_ENV=1`, `HERDR_PANE_ID`, `HERDR_TAB_ID`, and
-`HERDR_WORKSPACE_ID`, plus the public `herdr` CLI with worktree commands. Teleport
-checks the live caller IDs before changing Herdr state. Missing environment values
-use ordinary Git creation. A valid but unreachable Herdr connection fails rather than
-silently changing modes. Local moves do not open or retire Herdr panes or tabs.
+Local moves and worktree operations do not require Herdr and do not open or close
+its panes or tabs. For remote moves, Teleport checks the caller's live IDs and, for
+Herdr App, verifies that the addressed window contains the source terminal before
+changing its UI. An unreachable or mismatched route stops the move.
 
 On native Windows, Teleport sends an encoded PowerShell launch script and runs the
 current Pi installation directly. This preserves literal Windows paths and handoff
@@ -100,12 +99,14 @@ For a virtual model, Teleport verifies the virtual selection and its provider's
 authentication. The router can choose different physical models for later requests,
 so this check cannot establish credentials for every possible route.
 
-A detached controller on the original computer survives source Pi retirement.
-A locally initiated SSH connection forwards a private remote Unix socket to this
-controller. For a Windows destination, it forwards a dynamically assigned loopback
-TCP port to the controller instead. Teleport waits for SSH to confirm the forward
-before staging an arrival and reconnects using the same port. The callback protocol
-permits authenticated readiness and return requests, not arbitrary local commands.
+For Herdr App, the controller and cleanup workers run in unparented core terminals
+that outlive the source pane and are removed when they exit. The authenticated
+controller listens on a private Unix socket, or a loopback TCP port on Windows.
+A locally initiated SSH connection forwards a private remote Unix socket to it. For a
+Windows destination, it forwards a dynamically assigned loopback TCP port instead.
+Teleport waits for SSH to confirm the forward before staging an arrival and reconnects
+using the same port. The callback protocol permits authenticated readiness and return
+requests, not arbitrary local commands.
 It never forwards the raw Herdr socket or opens a public port. The destination needs
 no SSH key back to the original computer. After a desktop return, the controller uses
 an independent SSH process to retire the Windows source outside its terminal job.
@@ -129,6 +130,11 @@ The source remains available until the destination reports usable startup. A lau
 receipt catches failures even before the first process observation. Slow startup hooks
 and temporary observation failures do not trigger rollback.
 
+After a confirmed remote handoff, transcript cleanup runs separately from pane cleanup.
+It waits for the source process to exit and removes only the recorded file identity. If
+the process remains alive, the file was replaced, or cleanup cannot be confirmed, the
+transcript is retained for inspection.
+
 Known pre-commit failures roll back only the attempted destination and restore the
 previous state. Unknown stage, commit, cleanup or return outcomes keep a persistent
 source fence: do not resume a second competing agent or blindly retry.
@@ -146,15 +152,14 @@ an uncertain outward commit. This exception does not permit replacing other sess
 
 ## Worktree ownership
 
-Outside Herdr, ownership is recorded before running Git. Inside Herdr, creation uses
-`herdr worktree create` and records its returned path and workspace IDs. Herdr chooses
-the checkout path unless an explicit path is supplied. Creation from a linked checkout
-uses that checkout's commit as the default base.
+Ownership is recorded before running Git. Unless a path is supplied, the checkout
+is created beside the source checkout using the source directory and branch names.
+Creation from a linked checkout uses that checkout's commit as the default base.
 
-Removal requires a matching ownership record, Git common directory and clean checkout.
-Herdr removal also requires the owning connection and a workspace containing only its
-idle shell. A closed workspace can be reopened without focus for removal. Extra panes
-or running commands block it. Herdr removes the checkout and idle workspace together.
+Removal requires a matching ownership record, machine, repository, Git common
+directory and clean checkout. Git removes the checkout without inspecting or closing
+Herdr panels, including for older records containing Herdr metadata. Close or move
+other programs using the checkout before removing it.
 
 After removing a worktree, Teleport asks Git to delete its branch with `git branch -d`.
 An unmerged branch is not force-deleted.
