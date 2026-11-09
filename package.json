@@ -43,6 +43,7 @@
     "src/herdr.ts",
     "src/process-info.ps1",
     "src/app.ts",
+    "src/app-binary.ts",
     "src/readiness.ts",
     "src/remote.ts",
     "src/bridge.ts",
