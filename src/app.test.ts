@@ -1,7 +1,7 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { runHerdr } from "./herdr.ts";
-import { runAppProxy } from "./app.ts";
+import { assertAppHost, runAppProxy } from "./app.ts";
 import { remoteMachine } from "./remote.ts";
 
 vi.mock("node:child_process", () => ({ execFileSync: vi.fn() }));
@@ -31,6 +31,12 @@ test("App machine discovery consumes native profile names and sessions, not lega
   expect(calls()).toEqual([["hc", ["machine", "ls", "--json"]]]);
 });
 
+test("App routing rejects a window that does not contain the calling terminal", () => {
+  vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ spaces: [{ id: "sp3", tabs: [{ id: "tb4", terminals: [{ terminal: "different", pane: "p1" }] }] }] }));
+  expect(() => assertAppHost(app)).toThrow();
+  vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ spaces: [{ id: "sp3", tabs: [{ id: "tb4", terminals: [{ terminal: "t7", pane: "p1" }] }] }] }));
+  expect(() => assertAppHost(app)).not.toThrow();
+});
 test("a WSL App session identifies its Windows desktop from its exact workspace, tab and terminal", () => {
   vi.mocked(execFileSync)
     .mockReturnValueOnce(JSON.stringify({ machines: [] }))

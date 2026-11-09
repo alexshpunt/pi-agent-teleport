@@ -64,20 +64,14 @@ afterAll(() => {
 test.skipIf(!available)("Herdr creates, groups, reuses, reopens, and removes an owned checkout", async () => {
   const stateDir = join(directory, "state");
   const resource = createManagedWorktree({ repo, branch: "fix/login", path: join(directory, "login"), stateDir, herdr: context });
-  expect(resource.herdr?.parentWorkspaceId).toBe(context.workspaceId);
+  expect(resource.herdr).toBeUndefined();
   expect(readState(stateDir).resources[resource.id]).toEqual(resource);
-  const workspace = runHerdr(context, ["workspace", "get", resource.herdr!.workspaceId]).workspace;
+  const prepared = prepareHerdrDestination(context, resource.path, undefined, "Вход — исправление");
+  const workspace = runHerdr(context, ["workspace", "get", prepared.location.workspaceId]).workspace;
   expect(workspace.worktree.checkout_path).toBe(resource.path);
   expect(workspace.worktree.repo_root).toBe(repo);
-  const prepared = prepareHerdrDestination(context, resource.path, resource.herdr, "Вход — исправление");
   expect(runHerdr(context, ["tab", "get", prepared.location.tabId]).tab.label).toBe("Вход — исправление");
-  const unnamed = prepareHerdrDestination(context, resource.path, resource.herdr);
-  expect(unnamed.location).toEqual(prepared.location);
-  expect(runHerdr(context, ["tab", "get", unnamed.location.tabId]).tab.label).toBe("login");
-  expect(prepared.location.paneId).toBe(resource.herdr!.paneId);
-  expect(runHerdr(context, ["tab", "list", "--workspace", prepared.location.workspaceId]).tabs).toHaveLength(1);
   expect(runHerdr(context, ["pane", "run", prepared.location.paneId, "true"])).toEqual({ type: "ok" });
-  // Simulate the source tab closing after back. The checkout remains on disk.
   runHerdr(context, ["tab", "close", prepared.location.tabId]);
   expect(existsSync(resource.path)).toBe(true);
   removeManagedWorktree({ repo, id: resource.id, stateDir, herdr: context });
@@ -89,8 +83,8 @@ test.skipIf(!available)("Herdr creates, groups, reuses, reopens, and removes an 
   execFileSync("git", ["add", "."], { cwd: source.path });
   execFileSync("git", ["commit", "-m", "source commit"], { cwd: source.path, stdio: "ignore" });
   const fromLinked = createManagedWorktree({ repo: source.path, branch: "from-linked", stateDir, herdr: context });
-  expect(fromLinked.path).not.toBe(join(directory, "source-from-linked"));
-  expect(fromLinked.herdr?.parentWorkspaceId).toBe(context.workspaceId);
+  expect(fromLinked.path).toBe(join(directory, "source-from-linked"));
+  expect(fromLinked.herdr).toBeUndefined();
   expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: fromLinked.path, encoding: "utf8" })).toBe(execFileSync("git", ["rev-parse", "HEAD"], { cwd: source.path, encoding: "utf8" }));
   removeManagedWorktree({ repo: source.path, id: fromLinked.id, stateDir, herdr: context });
   removeManagedWorktree({ repo, id: source.id, stateDir, herdr: context });

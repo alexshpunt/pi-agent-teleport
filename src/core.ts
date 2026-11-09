@@ -148,60 +148,22 @@ function prepareDestination(context: HerdrContext, target: string, owned?: Resou
   const location = herdrLocation(context, { ...tab, workspace: { workspace_id: context.workspaceId } });
   return { location, rollback: () => { runHerdr(context, ["tab", "close", location.tabId]); }, rollbackArgs: ["tab", "close", location.tabId] };
 }
-/** Create a linked checkout with Git or Herdr, then save its actual path and ownership. */
+/** Create a linked checkout with Git and record its ownership independently of UI. */
 export function createManagedWorktree(input: { repo: string; branch: string; base?: string; path?: string; stateDir: string; herdr?: HerdrContext }): Resource {
   const repo = canonical(input.repo);
   git(repo, ["rev-parse", "--show-toplevel"]);
   git(repo, ["check-ref-format", "--branch", input.branch]);
   if (git(repo, ["branch", "--list", input.branch])) throw new Error(`Branch already exists: ${input.branch}`);
   const id = randomUUID();
-  const requestedPath = input.path ? resolve(repo, input.path) : undefined;
-  if (requestedPath && existsSync(requestedPath)) throw new Error(`Worktree path already exists: ${requestedPath}`);
-  let path: string;
-  let herdr: Resource["herdr"];
-  if (input.herdr?.backend === "app") assertHerdrContext(input.herdr);
-  if (input.herdr && input.herdr.backend !== "app") {
-    assertHerdrContext(input.herdr);
-    const parent = primaryRepo(repo);
-    const args = ["worktree", "create", "--cwd", parent, "--branch", input.branch];
-    args.push("--base", input.base ?? git(repo, ["rev-parse", "HEAD"]));
-    if (requestedPath) args.push("--path", requestedPath);
-    args.push("--no-focus");
-    const result = runHerdr(input.herdr, args);
-    if (!result.worktree?.path || !result.worktree.is_linked_worktree || result.worktree.branch !== input.branch) throw new Error("Herdr did not create the requested linked worktree.");
-    path = canonical(result.worktree.path);
-    herdr = herdrLocation(input.herdr, result, requestedPath ?? path);
-  } else {
-    path = requestedPath ?? join(dirname(repo), `${basename(repo)}-${input.branch.replace(/[^A-Za-z0-9._-]/g, "-")}`);
-    if (existsSync(path)) throw new Error(`Worktree path already exists: ${path}`);
-  }
-  const resource: Resource = { id, owner: "pi-agent-teleport", kind: "git-worktree", repo, path, branch: input.branch, createdAt: Date.now(), ...(herdr ? { herdr } : {}) };
+  const path = input.path ? resolve(repo, input.path) : join(dirname(repo), `${basename(repo)}-${input.branch.replace(/[^A-Za-z0-9._-]/g, "-")}`);
+  if (existsSync(path)) throw new Error(`Worktree path already exists: ${path}`);
+  const resource: Resource = { id, owner: "pi-agent-teleport", kind: "git-worktree", repo, path, branch: input.branch, createdAt: Date.now() };
   const state = readState(input.stateDir);
   if (state.machine) resource.machine = state.machine;
   state.resources[id] = resource;
   writeState(input.stateDir, state);
-  if (input.herdr && resource.herdr) {
-    // Save ownership before the follow-up lookup, so a CLI read failure cannot orphan the checkout.
-    const parentWorkspaceId = runHerdr(input.herdr, ["worktree", "list", "--cwd", primaryRepo(repo)]).source?.source_workspace_id;
-    if (!parentWorkspaceId) throw new Error(`Created worktree ${path}, but Herdr returned no parent workspace ID. Recover with resourceId: ${id}.`);
-    resource.herdr.parentWorkspaceId = parentWorkspaceId;
-    writeState(input.stateDir, state);
-  } else {
-    try { git(repo, ["worktree", "add", "-b", input.branch, path, input.base ?? "HEAD"]); }
-    catch (error) { delete state.resources[id]; writeState(input.stateDir, state); throw error; }
-
-    if (input.herdr?.backend === "app") {
-      resource.herdr = { ...input.herdr, workspaceId: "", tabId: "", paneId: "", parentWorkspaceId: input.herdr.workspaceId };
-      writeState(input.stateDir, state);
-      try {
-        const result = runHerdr(input.herdr, ["workspace", "create", "--cwd", path, "--label", input.branch, "--no-focus"]);
-        resource.herdr = { ...herdrLocation(input.herdr, result), parentWorkspaceId: input.herdr.workspaceId };
-        writeState(input.stateDir, state);
-      } catch (error) {
-        throw new Error(`Created Git worktree ${path}, but its App space is unconfirmed. Recover with resourceId: ${id}. ${String(error)}`);
-      }
-    }
-  }
+  try { git(repo, ["worktree", "add", "-b", input.branch, path, input.base ?? "HEAD"]); }
+  catch (error) { delete state.resources[id]; writeState(input.stateDir, state); throw error; }
   return resource;
 }
 
@@ -212,7 +174,6 @@ export function removeManagedWorktree(input: { repo: string; id: string; stateDi
   if (!resource || resource.owner !== "pi-agent-teleport") throw new Error(`Resource ${input.id} is not owned by Teleport.`);
   if (resource.machine !== state.machine) throw new Error("Return to the owning machine before removing this worktree.");
   if (canonical(input.repo) !== resource.repo) throw new Error("The owning repository does not match.");
-  if (resource.herdr && (!input.herdr || !sameHerdrConnection(input.herdr, resource.herdr))) throw new Error("Return to the owning Herdr session before removing this worktree.");
   if (!existsSync(resource.path)) {
     delete state.resources[input.id];
     writeState(input.stateDir, state);
@@ -222,29 +183,7 @@ export function removeManagedWorktree(input: { repo: string; id: string; stateDi
   const expected = canonical(resolve(resource.repo, git(resource.repo, ["rev-parse", "--git-common-dir"])));
   if (common !== expected) throw new Error("The worktree no longer belongs to the recorded repository.");
   if (git(resource.path, ["status", "--porcelain"])) throw new Error("Refusing to remove a dirty managed worktree.");
-  if (resource.herdr?.backend === "app" && input.herdr) {
-    assertHerdrContext(input.herdr);
-    const spaces = appSpaces(input.herdr).filter((space) => !space.machine && space.folder && canonical(space.folder) === canonical(resource.path));
-    if (spaces.length) {
-      const space = spaces[0];
-      if (spaces.length !== 1 || space.id !== resource.herdr.workspaceId || space.tabs.length !== 1 || space.tabs[0].id !== resource.herdr.tabId || space.tabs[0].terminals.length !== 1 || space.tabs[0].terminals[0].terminal !== resource.herdr.paneId || !isHerdrShell(input.herdr, resource.herdr.paneId)) throw new Error("Refusing to remove an occupied Herdr App space.");
-      // Park only our terminal: never close unseen mod panes in the same tab.
-      runHerdr(input.herdr, ["pane", "close", resource.herdr.paneId]);
-      if (appSpaces(input.herdr).some((space) => !space.machine && space.folder && canonical(space.folder) === canonical(resource.path))) throw new Error("The App space still contains other panes; close them before removing the checkout.");
-    }
-    git(resource.repo, ["worktree", "remove", resource.path]);
-  } else if (resource.herdr && input.herdr) {
-    assertHerdrContext(input.herdr);
-    const opened = runHerdr(input.herdr, ["worktree", "open", "--cwd", primaryRepo(resource.repo), "--path", resource.path, "--no-focus"]);
-    const location = herdrLocation(input.herdr, opened, resource.path);
-    resource.herdr = { ...location, parentWorkspaceId: resource.herdr.parentWorkspaceId };
-    writeState(input.stateDir, state);
-    const panes = runHerdr(input.herdr, ["pane", "list", "--workspace", location.workspaceId]).panes;
-    if (!Array.isArray(panes) || panes.length !== 1 || panes[0].pane_id !== location.paneId || !isHerdrShell(input.herdr, location.paneId)) throw new Error("Refusing to remove an occupied Herdr workspace. Return with back and close other panes first.");
-    runHerdr(input.herdr, ["worktree", "remove", "--workspace", location.workspaceId]);
-  } else {
-    git(resource.repo, ["worktree", "remove", resource.path]);
-  }
+  git(resource.repo, ["worktree", "remove", resource.path]);
   try { git(resource.repo, ["branch", "-d", resource.branch]); } catch { /* Preserve unmerged branches. */ }
   delete state.resources[input.id];
   writeState(input.stateDir, state);

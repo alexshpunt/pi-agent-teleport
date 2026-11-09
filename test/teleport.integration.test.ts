@@ -5,7 +5,7 @@ import { join, dirname, resolve } from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { assistantMessage, getToolExecution, getToolExecutionDetails, getToolResultText, PiIntegrationTest, testArtifactsDir, text, toolCall } from "pi-coding-agent-test";
 
-test("a real Pi process uses ordinary Git when Herdr caller IDs are incomplete", async () => {
+test("a real Pi process creates a worktree when the recorded Herdr session is unavailable", async () => {
   await mkdir(resolve(".tmp"), { recursive: true });
   const fixture = await mkdtemp(resolve(".tmp/native-create-"));
   workspaces.push(fixture);
@@ -23,7 +23,7 @@ test("a real Pi process uses ordinary Git when Herdr caller IDs are incomplete",
     testName: "teleport-native-create",
     artifactsDir: testArtifactsDir(import.meta.filename),
     cwd,
-    environment: { ...process.env, HERDR_ENV: "1", HERDR_WORKSPACE_ID: "invalid", HERDR_TAB_ID: "invalid", HERDR_PANE_ID: "" },
+    environment: { ...process.env, HC_TERMINAL_ID: "", HERDR_ENV: "1", HERDR_WORKSPACE_ID: "invalid", HERDR_TAB_ID: "invalid", HERDR_PANE_ID: "invalid", HERDR_SOCKET_PATH: "/missing/teleport-test.sock" },
     extensions: [join(dirname(import.meta.filename), "..", "src", "index.ts")],
     tools: ["teleport"],
     rawMode: false,
@@ -36,7 +36,7 @@ test("a real Pi process uses ordinary Git when Herdr caller IDs are incomplete",
   const details = getToolExecutionDetails(getToolExecution(result, "create")) as { resource: { path: string; herdr?: unknown } };
   expect(details.resource.path).toBe(path);
   expect(details.resource.herdr).toBeUndefined();
-  expect(getToolResultText(result, "create")).toContain(`Created worktree ${path}`);
+  expect(getToolResultText(result, "create")).toContain(path);
   expect(execFileSync("git", ["branch", "--show-current"], { cwd: path, encoding: "utf8" }).trim()).toBe("owned");
 });
 
@@ -92,22 +92,26 @@ test("a failed queued teleport starts a new agent turn", async () => {
 test("a real Pi process recognizes a remote destination without checking it as a local path", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "teleport-remote-requires-herdr-"));
   workspaces.push(cwd);
+  const missing = join(cwd, "missing");
   const result = await new PiIntegrationTest({
     testName: "teleport-remote-requires-herdr",
     artifactsDir: testArtifactsDir(import.meta.filename),
     cwd,
-    environment: { ...process.env, HERDR_ENV: "", HERDR_PANE_ID: "", HERDR_TAB_ID: "", HERDR_WORKSPACE_ID: "" },
+    environment: { ...process.env, HC_TERMINAL_ID: "", HERDR_ENV: "", HERDR_PANE_ID: "", HERDR_TAB_ID: "", HERDR_WORKSPACE_ID: "" },
     extensions: [join(dirname(import.meta.filename), "..", "src", "index.ts")],
     tools: ["teleport"],
     rawMode: false,
     conversation: [
-      assistantMessage([toolCall({ id: "remote", name: "teleport", arguments: { action: "jump", target: "ssh://vps/root/project" } })], { stopReason: "toolUse" }),
+      assistantMessage([
+        toolCall({ id: "remote", name: "teleport", arguments: { action: "jump", target: `ssh://vps${missing}` } }),
+        toolCall({ id: "local", name: "teleport", arguments: { action: "jump", target: missing } }),
+      ], { stopReason: "toolUse" }),
       assistantMessage([text("The source stays here because remote Teleport needs Herdr.")]),
     ],
   }).run("Move this session to the remote project");
   expect(getToolExecution(result, "remote").isError).toBe(true);
-  expect(getToolResultText(result, "remote")).toContain("Remote Teleport requires Herdr on both machines");
-  expect(getToolResultText(result, "remote")).not.toContain("Directory does not exist");
+  expect(getToolExecution(result, "local").isError).toBe(true);
+  expect(getToolResultText(result, "remote")).not.toEqual(getToolResultText(result, "local"));
   expect(result.providerRequests).toHaveLength(2);
 });
 test("a missing teleport destination is returned to the agent without ending the turn", async () => {

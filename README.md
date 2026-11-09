@@ -43,8 +43,9 @@ Show where this session has been.
 
 The agent handles the move. There are no slash commands to remember.
 
-Local moves work with or without Herdr. In Herdr, Git checkouts appear as workspaces
-grouped with their repository. Other agents and unrelated panes stay open.
+Local moves work with or without Herdr and stay in the current terminal. Creating and
+removing worktrees uses Git without opening or closing Herdr panels. Other agents and
+unrelated panes stay open.
 
 ## Remote machines
 

@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
-import { dirname } from "node:path";
+import { delimiter, dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { shellQuote } from "./remote.ts";
 import { parkAppTerminal, runAppOperation } from "./app.ts";
@@ -73,6 +74,7 @@ export function getHerdrContext(env: NodeJS.ProcessEnv = process.env): HerdrCont
 /** Pin every core call to the connection captured with its handle. */
 export function coreEnvironment(context: HerdrContext): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, HC_SESSION: context.session, HC_TERMINAL_ID: context.paneId };
+  if (process.platform !== "win32") env.PATH = [env.PATH, join(homedir(), ".local", "bin")].filter(Boolean).join(delimiter);
   for (const [name, value] of Object.entries({ XDG_STATE_HOME: context.stateHome, XDG_CONFIG_HOME: context.configHome, XDG_RUNTIME_DIR: context.runtimeDir, HERDR_APP_HOME: context.appHome, HC_SOCKET: context.coreSocketPath, HC_TERMINAL_SOCKET: context.coreSocketPath, HC_SCOPE: undefined })) {
     if (value === undefined) delete env[name]; else env[name] = value;
   }
