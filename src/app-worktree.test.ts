@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { appSpaces } from "./app.ts";
 import { isHerdrShell, runHerdr, type HerdrContext } from "./herdr.ts";
-import { createManagedWorktree, prepareHerdrDestination, readState, removeManagedWorktree } from "./core.ts";
+import { createManagedWorktree, prepareHerdrDestination, readState, removeManagedWorktree, writeState } from "./core.ts";
 
 vi.mock("./herdr.ts", async (original) => ({ ...await original<typeof import("./herdr.ts")>(), runHerdr: vi.fn(), assertHerdrContext: vi.fn(), isHerdrShell: vi.fn(() => true) }));
 vi.mock("./app.ts", async (original) => ({ ...await original<typeof import("./app.ts")>(), appSpaces: vi.fn() }));
@@ -29,33 +29,19 @@ function repo() {
   return { root, fixture, git, source, stateDir: join(fixture, "state"), path: join(fixture, "checkout") };
 }
 
-test("App creates a real Git worktree and records its public space without legacy worktree commands", () => {
+test("local worktree creation and legacy removal do not contact App", () => {
   const f = repo();
-  const resource = createManagedWorktree({ repo: f.root, branch: "owned", base: "main", path: f.path, stateDir: f.stateDir, herdr: context });
+  vi.mocked(runHerdr).mockImplementation(() => { throw new Error("App unavailable"); });
+  const resource = createManagedWorktree({ repo: f.root, branch: "owned", path: f.path, stateDir: f.stateDir, herdr: context });
   expect(existsSync(join(f.path, ".git"))).toBe(true);
-  expect(resource.herdr).toMatchObject({ backend: "app", workspaceId: "sp2", tabId: "tb2", paneId: "t2", parentWorkspaceId: "sp1" });
-  expect(readState(f.stateDir).resources[resource.id]).toEqual(resource);
-  expect(vi.mocked(runHerdr).mock.calls.some(([, args]) => args[0] === "worktree")).toBe(false);
-});
-
-test("a failed App space creation leaves the Git checkout durably owned for recovery", () => {
-  const f = repo();
-  vi.mocked(runHerdr).mockImplementation(() => { throw new Error("Window unavailable"); });
-  expect(() => createManagedWorktree({ repo: f.root, branch: "owned", path: f.path, stateDir: f.stateDir, herdr: context })).toThrow();
-  const resources = Object.values(readState(f.stateDir).resources);
-  expect(resources).toHaveLength(1);
-  expect(resources[0].path).toBe(f.path);
-  expect(existsSync(join(f.path, ".git"))).toBe(true);
-});
-
-test("an unconfirmed App space cannot be bypassed by removing the Git-only ownership record", () => {
-  const f = repo();
-  vi.mocked(runHerdr).mockImplementation(() => { throw new Error("Lost creation reply"); });
-  expect(() => createManagedWorktree({ repo: f.root, branch: "owned", path: f.path, stateDir: f.stateDir, herdr: context })).toThrow();
-  const resource = Object.values(readState(f.stateDir).resources)[0];
-  vi.mocked(appSpaces).mockReturnValue([{ id: "unknown", folder: f.path, tabs: [{ id: "unknown-tab", terminals: [{ terminal: "t9", pane: "p9" }] }] }]);
-  expect(() => removeManagedWorktree({ repo: f.root, id: resource.id, stateDir: f.stateDir, herdr: context })).toThrow();
-  expect(existsSync(f.path)).toBe(true);
+  expect(runHerdr).not.toHaveBeenCalled();
+  const state = readState(f.stateDir);
+  state.resources[resource.id].herdr = { ...context, workspaceId: "old", tabId: "old-tab", paneId: "old-pane" };
+  writeState(f.stateDir, state);
+  removeManagedWorktree({ repo: f.root, id: resource.id, stateDir: f.stateDir });
+  expect(existsSync(f.path)).toBe(false);
+  expect(readState(f.stateDir).resources[resource.id]).toBeUndefined();
+  expect(runHerdr).not.toHaveBeenCalled();
 });
 
 test("returning to an existing App checkout creates a new named tab rather than stealing its shell", () => {
@@ -65,12 +51,15 @@ test("returning to an existing App checkout creates a new named tab rather than 
   expect(vi.mocked(runHerdr).mock.calls.map(([, args]) => args)).toEqual([["tab", "create", "--workspace", "sp1", "--cwd", f.root, "--label", "Session name", "--no-focus"]]);
 });
 
-test("removing an App worktree refuses additional terminals before touching Git or the UI", () => {
+test("removing a legacy checkout does not touch other App terminals", () => {
   const f = repo();
-  const resource = createManagedWorktree({ repo: f.root, branch: "owned", path: f.path, stateDir: f.stateDir, herdr: context });
+  const resource = createManagedWorktree({ repo: f.root, branch: "owned", path: f.path, stateDir: f.stateDir });
+  const state = readState(f.stateDir);
+  state.resources[resource.id].herdr = { ...context, workspaceId: "sp2", tabId: "tb2", paneId: "t2" };
+  writeState(f.stateDir, state);
   vi.mocked(appSpaces).mockReturnValue([{ id: "sp2", folder: f.path, tabs: [{ id: "tb2", terminals: [{ terminal: "t2", pane: "p2" }, { terminal: "t3", pane: "p3" }] }] }]);
-  vi.mocked(runHerdr).mockClear();
-  expect(() => removeManagedWorktree({ repo: f.root, id: resource.id, stateDir: f.stateDir, herdr: context })).toThrow();
-  expect(existsSync(f.path)).toBe(true);
-  expect(vi.mocked(runHerdr).mock.calls.length).toBe(0);
+  removeManagedWorktree({ repo: f.root, id: resource.id, stateDir: f.stateDir, herdr: context });
+  expect(existsSync(f.path)).toBe(false);
+  expect(runHerdr).not.toHaveBeenCalled();
+  expect(appSpaces).not.toHaveBeenCalled();
 });

@@ -105,6 +105,21 @@ test("a controller connection has no startup deadline", async () => {
   } finally { deadline.mockRestore(); }
 });
 
+test("an inconclusive readiness observation is retried until it can be verified", async () => {
+  let commitFile = "";
+  let requests = 0;
+  await withSocket((socket) => socket.once("data", () => {
+    requests++;
+    if (requests === 1) socket.end(`${JSON.stringify({ ok: false, uncertain: true, error: "observation unavailable" })}\n`);
+    else { writeFileSync(commitFile, JSON.stringify({ ok: true })); socket.end(`${JSON.stringify({ ok: true })}\n`); }
+  }), async (socket) => {
+    commitFile = join(dirname(socket), "committed.json");
+    const fallback = setTimeout(() => writeFileSync(commitFile, JSON.stringify({ ok: true })), 1200);
+    try { await confirmArrival({ socket, token: "route", commitFile }, { sessionId: "session" }); }
+    finally { clearTimeout(fallback); }
+    expect(requests).toBeGreaterThan(1);
+  });
+});
 test("a lost readiness response cannot shut down an already committed arrival", async () => {
   let commitFile = "";
   await withSocket((socket) => socket.once("data", () => {

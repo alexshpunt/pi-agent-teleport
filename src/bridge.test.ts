@@ -2,16 +2,21 @@ import * as fs from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { abortArrival, commitArrival, stageArrival, watchArrival } from "./bridge.ts";
+import { abortArrival, assertReadyProcess, commitArrival, stageArrival, watchArrival } from "./bridge.ts";
 import { readState, writeState } from "./core.ts";
 import { runHerdr } from "./herdr.ts";
-import { runtimeFingerprint } from "./remote.ts";
+import { runtimeFingerprint, UnknownRemoteOutcome } from "./remote.ts";
 
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof import("node:fs")>();
   return { ...actual, writeFileSync: vi.fn(actual.writeFileSync) };
 });
 vi.mock("./herdr.ts", async (original) => ({ ...await original<typeof import("./herdr.ts")>(), runHerdr: vi.fn() }));
+test("an unstable process snapshot is inconclusive, not a foreign process", () => {
+  expect(() => assertReadyProcess({ shell_owns_foreground: false, foreground_processes: [] }, 42, "/source", "/source/session")).toThrow(UnknownRemoteOutcome);
+  expect(() => assertReadyProcess({ shell_owns_foreground: false, foreground_processes: [{ pid: 99, cwd: "/source", argv: ["other"] }] }, 42, "/source", "/source/session")).toThrowError();
+  expect(() => assertReadyProcess({ shell_owns_foreground: false, foreground_processes: [{ pid: 42, cwd: "/source", argv: ["pi"] }] }, 42, "/source", "/source/session")).not.toThrow();
+});
 const fixtures: string[] = [];
 let originalAgentDir: string | undefined;
 beforeEach(() => { originalAgentDir = process.env.PI_CODING_AGENT_DIR; vi.clearAllMocks(); });

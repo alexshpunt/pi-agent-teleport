@@ -1,8 +1,8 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createServer } from "node:net";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { retireAppSource } from "./bridge.ts";
+import { retireAppSource, retireSessionFile } from "./bridge.ts";
 import { retireDesktopSource } from "./bridge.ts";
 import { preserveHerdrSourceWorkspace } from "./core.ts";
 import { assertHerdrContext, runHerdr } from "./herdr.ts";
@@ -31,9 +31,22 @@ test("a desktop return preserves its workspace before retiring the verified sour
   await retireDesktopSource({ context, sourcePid: 42, cwd: "/source", sessionFile });
   expect(preserveHerdrSourceWorkspace).toHaveBeenCalledWith(context, "/source");
   expect(vi.mocked(runHerdr).mock.calls.at(-1)?.[1]).toEqual(["pane", "close", "t1"]);
-  expect(existsSync(sessionFile)).toBe(false);
+  expect(existsSync(sessionFile)).toBe(true);
 });
 
+test("desktop cleanup completes when the source has exited and its pane is already gone", async () => {
+  vi.mocked(assertHerdrContext).mockImplementation(() => { throw new Error("pane gone"); });
+  await retireDesktopSource({ context, sourcePid: 42, cwd: "/source", sessionFile });
+  expect(runHerdr).not.toHaveBeenCalled();
+  expect(existsSync(sessionFile)).toBe(true);
+});
+test("desktop cleanup refuses an unverifiable pane while the source is alive", async () => {
+  vi.mocked(assertHerdrContext).mockImplementation(() => { throw new Error("pane unavailable"); });
+  vi.mocked(process.kill).mockReturnValue(true);
+  await expect(retireDesktopSource({ context, sourcePid: 42, cwd: "/source", sessionFile })).rejects.toThrow();
+  expect(runHerdr).not.toHaveBeenCalled();
+  expect(existsSync(sessionFile)).toBe(true);
+});
 test("desktop arrival retirement notifies its return controller after closing the source", async () => {
   let packet: any;
   const server = createServer((socket) => socket.once("data", (data) => { packet = JSON.parse(data.toString()); socket.end('{"ok":true}\n'); }));
@@ -43,16 +56,51 @@ test("desktop arrival retirement notifies its return controller after closing th
   try {
     await retireAppSource({ context, sourcePid: 42, cwd: "/source", sessionFile, retireRoute: { socket: `tcp://127.0.0.1:${port}`, token: "secret", operationId: "operation" } });
     expect(packet).toEqual({ token: "secret", action: "app-retired", operationId: "operation" });
-    expect(existsSync(sessionFile)).toBe(false);
+    expect(existsSync(sessionFile)).toBe(true);
   } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
 });
 
-test("App retirement verifies the source process before closing and deleting its transcript", async () => {
+test("a committed source transcript is removed after exit without contacting Herdr", async () => {
+  const stat = lstatSync(sessionFile);
+  await retireSessionFile({ sourcePid: 42, sessionFile, dev: stat.dev, ino: stat.ino });
+  expect(existsSync(sessionFile)).toBe(false);
+  expect(runHerdr).not.toHaveBeenCalled();
+});
+
+test("a committed source transcript is retained while its process remains alive", async () => {
+  vi.useFakeTimers();
+  vi.mocked(process.kill).mockReturnValue(true);
+  const stat = lstatSync(sessionFile);
+  const outcome = retireSessionFile({ sourcePid: 42, sessionFile, dev: stat.dev, ino: stat.ino }).then(() => false, () => true);
+  await vi.advanceTimersByTimeAsync(5_100);
+  expect(await outcome).toBe(true);
+  expect(existsSync(sessionFile)).toBe(true);
+  vi.useRealTimers();
+});
+test("a replacement transcript is retained", async () => {
+  const stat = lstatSync(sessionFile);
+  renameSync(sessionFile, join(fixture, "old.jsonl"));
+  writeFileSync(sessionFile, "replacement");
+  await expect(retireSessionFile({ sourcePid: 42, sessionFile, dev: stat.dev, ino: stat.ino })).rejects.toThrow();
+  expect(existsSync(sessionFile)).toBe(true);
+});
+test("a verified exited source session is cleaned even if closing its pane fails", async () => {
+  observe(40, [{ pid: 42, cwd: "/source", argv: ["pi", "--session", sessionFile] }]);
+  vi.mocked(runHerdr).mockImplementation((_context, args) => {
+    if (args[1] === "close") throw new Error("UI unavailable");
+    return { process_info: { shell_pid: 10, foreground_process_group_id: 40, foreground_processes: [{ pid: 42, cwd: "/source", argv: ["pi", "--session", sessionFile] }] } };
+  });
+  const stat = lstatSync(sessionFile);
+  await expect(cleanup()).rejects.toThrow();
+  await retireSessionFile({ sourcePid: 42, sessionFile, dev: stat.dev, ino: stat.ino });
+  expect(existsSync(sessionFile)).toBe(false);
+});
+test("App retirement verifies the source process before closing its pane", async () => {
   observe(40, [{ pid: 42, cwd: "/source", argv: ["pi", "--session", sessionFile] }]);
   await cleanup();
   expect(assertHerdrContext).toHaveBeenCalledWith(context);
   expect(vi.mocked(runHerdr).mock.calls.map(([, args]) => args)).toEqual([["pane", "process-info", "--pane", "t1"], ["pane", "close", "t1"]]);
-  expect(existsSync(sessionFile)).toBe(false);
+  expect(existsSync(sessionFile)).toBe(true);
 });
 
 test.each([
@@ -70,5 +118,5 @@ test("App retirement can close an idle shell only after its source process has e
   observe(10, [{ pid: 10, cwd: "/source" }]);
   await cleanup();
   expect(vi.mocked(runHerdr).mock.calls.at(-1)?.[1]).toEqual(["pane", "close", "t1"]);
-  expect(existsSync(sessionFile)).toBe(false);
+  expect(existsSync(sessionFile)).toBe(true);
 });
