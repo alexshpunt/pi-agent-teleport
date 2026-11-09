@@ -79,6 +79,16 @@ Destination readiness has no time limit after launch. Teleport cancels that star
 only on a reported failure or an observed exit. The earlier Pi installation probe has
 a three-minute limit.
 
+### Herdr App from WSL
+
+In a WSL terminal of the Windows Herdr App, Teleport finds the App's command-line
+program and the machine name the App lists the terminal under, with no setup. The
+program is the first found of `PI_HERDR_APP_CLI`, `HERDR_APP_BIN`, `herdr-app` or
+`herdr-app.exe` on `PATH`, and the Windows installer's folder. The machine is read from
+the App's listing by the terminal, tab and space IDs together. Set `PI_HERDR_APP_CLI`
+to a full path, or `PI_HERDR_APP_MACHINE` to a machine name (empty for the App's own
+machine), when the automatic choice is wrong.
+
 ## Worktrees and safety
 
 Ask Teleport to create a worktree when you want a separate checkout for a task.
