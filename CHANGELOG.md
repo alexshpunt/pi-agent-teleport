@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.10 - 2026-11-09
+
+- Create and remove Teleport-owned worktrees through Git without opening or closing Herdr panels. Keep ownership, clean-checkout and unmerged-branch safeguards.
+- Keep source session cleanup independent of panel cleanup. Preserve the source when a handoff cannot be confirmed.
+- Route cross-runtime handoffs to the Herdr App hosting the source session and keep controller workers alive when the source pane closes.
+- Support Windows controller connections over loopback TCP and find Herdr Core in non-login WSL environments. Retry inconclusive process snapshots while rejecting confirmed identity mismatches.
+
 ## 0.2.9 - 2026-11-08
 
 - Move sessions between WSL and Windows through Herdr App, including returns to the desktop hosting the source window.
