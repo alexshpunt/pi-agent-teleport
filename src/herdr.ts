@@ -4,7 +4,7 @@ import { delimiter, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { shellQuote } from "./remote.ts";
-import { parkAppTerminal, runAppOperation } from "./app.ts";
+import { detectAppMachine, parkAppTerminal, runAppOperation } from "./app.ts";
 
 /** Encode a script so the receiving Windows shell never parses paths or handoff JSON. */
 export function powershellCommand(script: string): string {
@@ -65,7 +65,10 @@ export function getHerdrContext(env: NodeJS.ProcessEnv = process.env): HerdrCont
     }
     const terminal = runCore(context, ["get", context.paneId]);
     if (terminal.address !== context.paneId || terminal.state !== "live" || !terminal.labels?.["herdr.space"] || !terminal.labels?.["herdr.tab"]) throw new Error("This core terminal has no verified Herdr App space and tab.");
-    return { ...context, workspaceId: terminal.labels["herdr.space"], tabId: terminal.labels["herdr.tab"] };
+    const located = { ...context, workspaceId: terminal.labels["herdr.space"], tabId: terminal.labels["herdr.tab"] };
+    // The App names this terminal's machine only in its own listing; saved routes already carry it.
+    const machine = context.appMachine ? undefined : detectAppMachine(located, env);
+    return machine ? { ...located, appMachine: machine } : located;
   }
   if (env.HERDR_ENV !== "1" || !env.HERDR_WORKSPACE_ID?.trim() || !env.HERDR_TAB_ID?.trim() || !env.HERDR_PANE_ID?.trim()) return;
   return { workspaceId: env.HERDR_WORKSPACE_ID, tabId: env.HERDR_TAB_ID, paneId: env.HERDR_PANE_ID, session: env.HERDR_SESSION || "default", ...(env.HERDR_SOCKET_PATH ? { socketPath: env.HERDR_SOCKET_PATH } : {}) };
