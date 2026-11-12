@@ -82,10 +82,10 @@ describe("managed worktrees", () => {
     const removed = removeManagedWorktree({ repo: root, id: managed.id, stateDir });
     expect(removed).toEqual(managed);
     expect(readState(stateDir).resources[managed.id]).toBeUndefined();
-    expect(() => execFileSync("git", ["show-ref", "--verify", `refs/heads/${managed.branch}`], { cwd: root })).toThrow();
+    expect(() => execFileSync("git", ["show-ref", "--verify", `refs/heads/${managed.branch}`], { cwd: root, stdio: "pipe" })).toThrow();
 
     const foreign = join(root, "foreign");
-    execFileSync("git", ["worktree", "add", "-b", "foreign", foreign], { cwd: root });
+    execFileSync("git", ["worktree", "add", "-b", "foreign", foreign], { cwd: root, stdio: "pipe" });
     expect(() => removeManagedWorktree({ repo: root, id: "missing", stateDir })).toThrow(/owned/);
   });
 
