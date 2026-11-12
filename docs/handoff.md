@@ -79,6 +79,81 @@ hosts the App window for a remote source, Teleport instead verifies the source's
 workspace, tab and terminal against that window and uses its local desktop. Pane IDs
 are server-scoped; inherited local IDs must not identify a remote pane.
 
+### Herdr App adapter
+
+The App adapter resolves `HC_TERMINAL_ID` through the owning `hc` connection and
+verifies its space/tab labels. It uses public App commands for names and layout;
+Git manages worktrees. Creation first requests `focus:false`. Only the running
+window's pre-execution rejection of that unsupported argument permits retrying
+with App's default focus behavior. A timeout or lost reply is never replayed.
+
+Worktree ownership is saved before requesting an App space. An unconfirmed UI
+result retains that ownership for recovery. Removal requires the recorded sole
+idle terminal; it parks that terminal and waits for the UI acknowledgment before
+ending it. Other terminals and mod panes prevent checkout removal.
+
+Linux process observation checks the complete foreground group in the shell's
+session, including wrappers, and reads each process's current directory from the
+OS. The observer needs permission to read those processes' `/proc` entries; a
+separate user namespace can prevent this even with the same numeric UID.
+
+Native Windows uses 64-bit Windows PowerShell and a read-only process-tree
+observer. It reads live PID, current directory and argv from process memory,
+checks creation times and repeated snapshots, and reports an explicit idle/busy
+verdict: ConPTY has no Unix foreground group. The observer excludes itself and
+identifies the system console host by its native executable path, not its name.
+Other descendants, including user programs named conhost.exe, remain occupants.
+An unreadable or changing descendant, including WOW64, is busy/unknown; an
+unreadable root is an error. The child PowerShell's execution policy applies only
+to that process and does not change host settings.
+
+Local App handoffs launch the current Node executable and Pi entry point directly,
+preserving runtime flags and the captured agent directory. A login-shell `pi` wrapper
+cannot replace that profile at the destination. Legacy Unix launches are unchanged.
+
+App source retirement runs in a detached worker with the saved connection and
+without the source terminal's sweep scope. It verifies the recorded PID, current
+directory and session argument, or confirms that the source exited and its shell
+is idle, before closing the terminal. The source transcript is removed only after
+process exit. Failed cleanup retains it and records the worker outcome under the
+session's `cleanup` directory.
+
+Remote App creation uses the persistent direct SSH profile from `hc machine ls`.
+Its name qualifies UI handles; native core handles remain unqualified and bound to
+their captured connection. Lists and creation receipts cannot adopt another
+machine's handles. UI requests travel through the authenticated Teleport controller,
+which permits only the addressed machine's creation, naming, closure, parking and
+listing commands. SSH endpoint calls are asynchronous so staging can call back to
+the controller. The return channel stays available until remote App source cleanup
+acknowledges retirement.
+
+A Pi started manually in a remote App terminal has no inherited controller. Give it
+an explicit desktop SSH route: save a private JSON file on that remote machine and
+set `PI_TELEPORT_APP_CONTEXT` to its absolute path before starting Pi.
+
+```json
+{
+  "backend": "app",
+  "session": "default",
+  "appMachine": "worker",
+  "appSsh": { "target": "desktop-ssh", "session": "default" }
+}
+```
+
+The outer `session` is the remote terminal's core session. `appMachine` is this
+remote machine's profile name in the desktop's `hc machine ls`, not its SSH target
+or permanent host ID. `appSsh.target` is an existing trusted OpenSSH alias on the
+remote machine. The desktop needs Node and the public App CLI on its SSH login
+PATH. `appSsh.session` selects the desktop's core/App session; it defaults to
+`default`. For a custom desktop installation, `appSsh` also accepts `appCli`,
+`appHome`, `stateHome`, `configHome`, `runtimeDir` and `coreSocketPath`. These desktop
+settings are separate from the remote core's environment. SSH host-key checks stay
+enabled and the SSH agent is never forwarded. No public App endpoint is added.
+
+Native App process observation is not implemented on macOS. App operations that
+require foreground ownership fail closed there. The legacy integration above is
+unchanged.
+
 ## Remote activation and return
 
 Remote preflight runs the destination's configured `pi` from the target directory.
