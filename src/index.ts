@@ -9,6 +9,7 @@ import { ownsExecution, registerTeleportOutput, type TeleportExecution, type Tel
 import { createManagedWorktree, preserveHerdrSourceWorkspace, readState, reconcileState, removeManagedWorktree, writeState, type Resource } from "./core.ts";
 import { appConnection, assertHerdrContext, getHerdrContext, powershellCommand, powershellQuote, type HerdrContext } from "./herdr.ts";
 import { preflightSession, writeReadiness } from "./readiness.ts";
+import { clearedFolderReport, folderReport, writeFolderReport } from "./folder-report.ts";
 import { assertAppHost } from "./app.ts";
 import { StringEnum } from "./string-enum.ts";
 import { UnknownRemoteOutcome, agentDirectory, piCommand, type ModelIdentity, confirmArrival, extensionFile, parseTarget, probeRemote, qualifyLocation, remoteMachine, requestController, runtimeFingerprint, shellQuote as quote, startAppSourceCleanup, startRemoteMove, startSessionCleanup, workerFile } from "./remote.ts";
@@ -464,6 +465,13 @@ export default function teleport(pi: ExtensionAPI) {
     executions.clear();
     sessionId = ctx.sessionManager.getSessionId();
     dir = dataDir(sessionId);
+    // Every move starts a session in its destination, in this process or a new one.
+    writeFolderReport(ctx.mode, folderReport(ctx.cwd));
+  });
+  // A replaced session's successor reports its own folder; only an exit clears it,
+  // so the shell that may follow is not shown in the agent's folder.
+  pi.on("session_shutdown", (event, ctx) => {
+    if (event.reason === "quit" && !process.env.PI_TELEPORT_PREFLIGHT) writeFolderReport(ctx.mode, clearedFolderReport);
   });
   // The initial arrival command runs only after Pi has finished every startup hook.
   pi.registerCommand("__teleport_arrival", {

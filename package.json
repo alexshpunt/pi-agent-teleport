@@ -49,6 +49,7 @@
     "src/bridge.ts",
     "src/output.ts",
     "src/string-enum.ts",
+    "src/folder-report.ts",
     "assets/agent-portal.webp",
     "assets/agent-portal-gallery.webp",
     "docs/handoff.md",
