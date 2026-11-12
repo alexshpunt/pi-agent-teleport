@@ -48,6 +48,7 @@
     "src/remote.ts",
     "src/bridge.ts",
     "src/output.ts",
+    "src/string-enum.ts",
     "assets/agent-portal.webp",
     "assets/agent-portal-gallery.webp",
     "docs/handoff.md",
@@ -73,9 +74,13 @@
     "typebox": "*"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "^1.5.2",
+    "@earendil-works/pi-coding-agent": "^1.5.2",
+    "@earendil-works/pi-tui": "^1.5.2",
     "@types/node": "latest",
     "pi-agent-ide": "0.9.0",
     "pi-coding-agent-test": "latest",
+    "typebox": "^1.4.6",
     "typescript": "latest",
     "vitest": "latest"
   },
