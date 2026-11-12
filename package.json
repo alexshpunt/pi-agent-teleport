@@ -80,7 +80,7 @@
     "@types/node": "latest",
     "pi-agent-ide": "0.9.0",
     "pi-coding-agent-test": "latest",
-    "typebox": "^1.4.6",
+    "typebox": "1.3.27",
     "typescript": "latest",
     "vitest": "latest"
   },
