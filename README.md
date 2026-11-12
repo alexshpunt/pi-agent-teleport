@@ -47,6 +47,12 @@ Local moves work with or without Herdr and stay in the current terminal. Creatin
 removing worktrees uses Git without opening or closing Herdr panels. Other agents and
 unrelated panes stay open.
 
+In an interactive terminal, Teleport reports the session's folder with the standard
+OSC 7 sequence (`ESC ] 7 ; file://<host>/<path> ESC \`) when a session starts and after
+every move, and clears it when Pi quits. Terminals that read OSC 7, such as Herdr App,
+show the agent under its current folder, also on Windows, where Pi's process folder is
+not visible to them. Print, JSON and RPC modes write nothing.
+
 ## Remote machines
 
 ```text

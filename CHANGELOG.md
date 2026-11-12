@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Report the session's folder to the terminal with OSC 7 when a session starts and after every move, and clear it when Pi quits, so Herdr App shows the agent under its current folder, including Pi on Windows. Only the interactive TUI on a terminal writes it.
+
 ## 0.2.11 - 2026-11-09
 
 - Work from a WSL terminal of the Windows Herdr App: find the App's command-line program when `herdr-app` is not on `PATH`, and detect the machine the App lists the terminal under. `PI_HERDR_APP_CLI` and `PI_HERDR_APP_MACHINE` override both.
