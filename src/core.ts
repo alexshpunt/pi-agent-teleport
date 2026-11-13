@@ -62,14 +62,39 @@ export function mergeMachineResources(original: Record<string, Resource>, return
     ...Object.fromEntries(Object.entries(returned).filter(([, resource]) => resource.machine === machine)),
   };
 }
+/** Windows can open WSL files, but their Git metadata belongs to Linux Git. */
+function wslPath(path: string): { root: string; distro: string; path: string } | undefined {
+  if (process.platform !== "win32") return;
+  const match = /^(\\\\(?:wsl\.localhost|wsl\$)\\([^\\]+))(\\.*)?$/i.exec(path.replaceAll("/", "\\"));
+  if (match) return { root: match[1], distro: match[2], path: match[3]?.replaceAll("\\", "/") || "/" };
+}
+function wsl(distro: string, args: string[]): string {
+  return execFileSync("wsl.exe", ["--distribution", distro, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
 function git(cwd: string, args: string[]): string {
-  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const linux = wslPath(cwd);
+  return linux
+    ? wsl(linux.distro, ["--cd", linux.path, "--exec", "git", ...args])
+    : execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+/** Convert only filesystem arguments, never refs or other Git arguments. */
+function gitInputPath(cwd: string, path: string): string {
+  const linux = wslPath(cwd);
+  if (!linux) return path;
+  const target = wslPath(path);
+  if (!target) return wsl(linux.distro, ["--exec", "wslpath", "-u", path]);
+  if (target.distro.toLowerCase() !== linux.distro.toLowerCase()) throw new Error("A worktree must use the source WSL distribution.");
+  return target.path;
+}
+function gitOutputPath(cwd: string, path: string): string {
+  const linux = wslPath(cwd);
+  return linux && path.startsWith("/") ? join(linux.root, path) : resolve(cwd, path);
 }
 function canonical(path: string): string { return existsSync(path) ? realpathSync(path) : resolve(path); }
 function primaryRepo(repo: string): string {
   const first = git(repo, ["worktree", "list", "--porcelain"]).split("\n")[0];
   if (!first?.startsWith("worktree ")) throw new Error("Git did not return a primary checkout.");
-  return canonical(first.slice("worktree ".length));
+  return canonical(gitOutputPath(repo, first.slice("worktree ".length)));
 }
 
 /** Preserve only a primary checkout when its last agent pane leaves; never add shells to worktrees or plain directories. */
@@ -83,7 +108,7 @@ export function preserveHerdrSourceWorkspace(context: HerdrContext, cwd: string)
   let primary = checkout?.is_linked_worktree === false;
   if (!checkout) {
     // Herdr may not have detected Git metadata yet, especially for manually opened workspaces.
-    try { primary = canonical(git(cwd, ["rev-parse", "--show-toplevel"])) === primaryRepo(cwd); } catch { /* Non-Git directories need no replacement shell. */ }
+    try { primary = canonical(gitOutputPath(cwd, git(cwd, ["rev-parse", "--show-toplevel"]))) === primaryRepo(cwd); } catch { /* Non-Git directories need no replacement shell. */ }
   }
   if (!primary) return;
   runHerdr(context, ["tab", "create", "--workspace", context.workspaceId, "--cwd", cwd, "--label", "shell", "--no-focus"]);
@@ -122,7 +147,7 @@ function prepareAppDestination(context: HerdrContext, target: string, checkout: 
 function prepareDestination(context: HerdrContext, target: string, owned?: Resource["herdr"], sessionName?: string, separateWorkspace = false): PreparedDestination {
   const label = sessionName || basename(target) || target;
   let checkout = false;
-  try { checkout = canonical(git(target, ["rev-parse", "--show-toplevel"])) === canonical(target); } catch { /* Plain directories use the current workspace. */ }
+  try { checkout = canonical(gitOutputPath(target, git(target, ["rev-parse", "--show-toplevel"]))) === canonical(target); } catch { /* Plain directories use the current workspace. */ }
   if (context.backend === "app") return prepareAppDestination(context, target, checkout, owned, label, separateWorkspace);
   if (checkout) {
     const opened = runHerdr(context, ["worktree", "open", "--cwd", primaryRepo(target), "--path", target, "--no-focus"]);
@@ -162,7 +187,7 @@ export function createManagedWorktree(input: { repo: string; branch: string; bas
   if (state.machine) resource.machine = state.machine;
   state.resources[id] = resource;
   writeState(input.stateDir, state);
-  try { git(repo, ["worktree", "add", "-b", input.branch, path, input.base ?? "HEAD"]); }
+  try { git(repo, ["worktree", "add", "-b", input.branch, gitInputPath(repo, path), input.base ?? "HEAD"]); }
   catch (error) { delete state.resources[id]; writeState(input.stateDir, state); throw error; }
   return resource;
 }
@@ -179,11 +204,11 @@ export function removeManagedWorktree(input: { repo: string; id: string; stateDi
     writeState(input.stateDir, state);
     return resource;
   }
-  const common = canonical(resolve(resource.path, git(resource.path, ["rev-parse", "--git-common-dir"])));
-  const expected = canonical(resolve(resource.repo, git(resource.repo, ["rev-parse", "--git-common-dir"])));
+  const common = canonical(gitOutputPath(resource.path, git(resource.path, ["rev-parse", "--git-common-dir"])));
+  const expected = canonical(gitOutputPath(resource.repo, git(resource.repo, ["rev-parse", "--git-common-dir"])));
   if (common !== expected) throw new Error("The worktree no longer belongs to the recorded repository.");
   if (git(resource.path, ["status", "--porcelain"])) throw new Error("Refusing to remove a dirty managed worktree.");
-  git(resource.repo, ["worktree", "remove", resource.path]);
+  git(resource.repo, ["worktree", "remove", gitInputPath(resource.repo, resource.path)]);
   try { git(resource.repo, ["branch", "-d", resource.branch]); } catch { /* Preserve unmerged branches. */ }
   delete state.resources[input.id];
   writeState(input.stateDir, state);
