@@ -1,5 +1,6 @@
 import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 import { coreEnvironment, type HerdrContext } from "./herdr.ts";
+import type { ArrivalPlacement } from "./core.ts";
 import { UnknownRemoteOutcome, sshOptions, workerFile } from "./remote.ts";
 import { defaultAppCliName, resolveAppCli, runningInWsl } from "./app-binary.ts";
 
@@ -178,6 +179,15 @@ export function appSpaces(context: HerdrContext): AppSpace[] {
     }));
 }
 
+/** The names of this terminal's space and tab, for an arrival on another machine; numbered tab names are positions, not names. */
+export function appPlacement(context: HerdrContext): ArrivalPlacement | undefined {
+  if (context.backend !== "app") return undefined;
+  const space = appSpaces(context).find((space) => space.id === context.workspaceId);
+  if (typeof space?.name !== "string" || !space.name.trim()) return undefined;
+  const tab = space.tabs.find((tab) => tab.id === context.tabId)?.name;
+  return { space: space.name, ...(typeof tab === "string" && tab.trim() && !/^\d+$/.test(tab) ? { tab } : {}) };
+}
+
 /** Verify that the addressed window hosts this source terminal before routing a handoff. */
 export function assertAppHost(context: HerdrContext): void {
   const matches = appSpaces(context).filter((space) => space.id === context.workspaceId && space.tabs.some((tab) => tab.id === context.tabId && tab.terminals.some((terminal) => terminal.terminal === context.paneId)));
@@ -222,7 +232,7 @@ export function runAppOperation(context: HerdrContext, args: string[]): any {
     return args[index + 1];
   };
   if (kind === "tab" && action === "create") return appCreation(context, createAppItem(context, "tab.new", { space: uiId(context, option("--workspace")), folder: option("--cwd"), name: option("--label") }));
-  if (kind === "workspace" && action === "create") return appCreation(context, createAppItem(context, "space.new", { folder: option("--cwd"), name: option("--label"), tab: option("--label"), machine: context.appMachine || "" }));
+  if (kind === "workspace" && action === "create") return appCreation(context, createAppItem(context, "space.new", { folder: option("--cwd"), name: option("--label"), tab: args.includes("--tab-label") ? option("--tab-label") : option("--label"), machine: context.appMachine || "" }));
   if ((kind === "tab" || kind === "workspace") && action === "close" && args.length === 3) return runApp(context, ["do", kind === "tab" ? "tab.close" : "space.close", JSON.stringify({ id: uiId(context, args[2]), confirmed: true })]);
   if (kind === "tab" && action === "rename" && args.length === 4) return runApp(context, ["do", "tab.rename", JSON.stringify({ id: uiId(context, args[2]), name: args[3] })]);
   if (kind === "workspace" && action === "get") {

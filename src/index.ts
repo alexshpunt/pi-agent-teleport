@@ -6,13 +6,13 @@ import { SessionManager, VERSION, type ExtensionAPI, type ExtensionCommandContex
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import { ownsExecution, registerTeleportOutput, type TeleportExecution, type TeleportOutcome } from "./output.ts";
-import { createManagedWorktree, preserveHerdrSourceWorkspace, readState, reconcileState, removeManagedWorktree, writeState, type Resource } from "./core.ts";
+import { createManagedWorktree, preserveHerdrSourceWorkspace, readState, reconcileState, removeManagedWorktree, writeState, type ArrivalPlacement, type Resource } from "./core.ts";
 import { appConnection, assertHerdrContext, getHerdrContext, powershellCommand, powershellQuote, type HerdrContext } from "./herdr.ts";
 import { preflightSession, writeReadiness } from "./readiness.ts";
 import { clearedFolderReport, folderReport, writeFolderReport } from "./folder-report.ts";
-import { assertAppHost } from "./app.ts";
+import { appPlacement, assertAppHost } from "./app.ts";
 import { StringEnum } from "./string-enum.ts";
-import { UnknownRemoteOutcome, agentDirectory, piCommand, type ModelIdentity, confirmArrival, extensionFile, parseTarget, probeRemote, qualifyLocation, remoteMachine, requestController, runtimeFingerprint, shellQuote as quote, startAppSourceCleanup, startRemoteMove, startSessionCleanup, workerFile } from "./remote.ts";
+import { UnknownRemoteOutcome, agentDirectory, controllerAnswers, piCommand, type ModelIdentity, confirmArrival, extensionFile, parseTarget, probeRemote, qualifyLocation, remoteMachine, requestController, runtimeFingerprint, shellQuote as quote, startAppSourceCleanup, startRemoteMove, startSessionCleanup, workerFile } from "./remote.ts";
 
 function dataDir(sessionId: string): string { return join(process.env.PI_CODING_AGENT_DIR ?? join(process.env.HOME ?? homedir(), ".pi", "agent"), "teleport", sessionId); }
 function serialize(ctx: ExtensionCommandContext, target: string): { source: string; destination: string } {
@@ -40,6 +40,12 @@ export function buildSourcePaneCleanup(paneId: string, sourcePid: number, _sessi
     "i=0",
     `while kill -0 ${sourcePid} 2>/dev/null && [ "$i" -lt 50 ]; do i=$((i + 1)); sleep 0.1; done`,
   ].join("; ");
+}
+
+/** Where the source agent sits in Herdr App, mirrored at the destination; a failed lookup only loses the names. */
+function sourcePlacement(context: HerdrContext): ArrivalPlacement | undefined {
+  try { return appPlacement(context); }
+  catch { return undefined; }
 }
 
 /** Describe a removed worktree using human-facing identifiers. */
@@ -124,18 +130,21 @@ export default function teleport(pi: ExtensionAPI) {
     ctx.shutdown();
   }
 
-  async function jumpRemote(ctx: ExtensionCommandContext, host: string, path: string, execution: TeleportExecution) {
+  async function jumpRemote(ctx: ExtensionCommandContext, requested: string, path: string, execution: TeleportExecution) {
     let herdr = getHerdrContext();
     if (!herdr) throw new Error("Remote Teleport requires Herdr on both machines. Local moves still work without Herdr.");
     assertHerdrContext(herdr);
     const { source, sessionText } = snapshot(ctx);
-    const profile = remoteMachine(host, herdr);
+    const { target: resolvedTarget, ...profile } = remoteMachine(requested, herdr);
+    // A Herdr machine name resolves to its saved SSH target; SSH and recorded locations use the target.
+    const host = resolvedTarget ?? requested;
     herdr = profile.sourceContext || herdr;
     if (herdr.backend === "app") assertAppHost(herdr);
+    const placement = sourcePlacement(herdr);
     const remote = probeRemote(host, path, implementation);
     const id = randomUUID();
     const state = readState(dir);
-    const move = { id, host, path, ...profile, sourceCwd: ctx.cwd, sourceSession: source, sourcePid: process.pid, sessionText, sessionId, execution, sessionName: ctx.sessionManager.getSessionName(), state, stateDir: dir, herdr, fingerprint: implementation, remoteWorker: remote.worker, remoteAgentDir: remote.agentDir, localVersion: VERSION, remoteVersion: remote.version, localCommand: piCommand(), remoteCommand: remote.command, remoteCore: remote.core, remotePlatform: remote.platform, expectedModel: selectedModel(ctx) };
+    const move = { id, host, path, ...profile, sourceCwd: ctx.cwd, sourceSession: source, sourcePid: process.pid, sessionText, sessionId, execution, sessionName: ctx.sessionManager.getSessionName(), state, stateDir: dir, herdr, fingerprint: implementation, remoteWorker: remote.worker, remoteAgentDir: remote.agentDir, localVersion: VERSION, remoteVersion: remote.version, localCommand: piCommand(), remoteCommand: remote.command, remoteCore: remote.core, remotePlatform: remote.platform, expectedModel: selectedModel(ctx), placement };
     state.pendingRemote = { id, receipt: join(dir, "bridges", id, "result.json") };
     writeState(dir, state);
     // Keep the captured source state independent from the in-flight marker.
@@ -159,6 +168,8 @@ export default function teleport(pi: ExtensionAPI) {
     if (!state.returnRoute) throw new Error("No remote return route is recorded.");
     const herdr = getHerdrContext();
     if (!herdr) throw new Error("Return through the native Herdr pane that owns this session.");
+    // The controller exits once this destination's Pi has exited, so a restarted session has no route back.
+    if (!await controllerAnswers(state.returnRoute)) throw new Error(`The return route to ${state.returnRoute.previous} does not answer: its controller on that machine has exited, for example because Pi restarted here, or its SSH connection is down. Nothing moved. Use jump to move this session.`);
     const { source, sessionText } = snapshot(ctx);
     const id = randomUUID();
     const requests = join(dir, "return-requests");
@@ -169,7 +180,7 @@ export default function teleport(pi: ExtensionAPI) {
     writeState(dir, state);
     let result: unknown;
     try {
-      result = await requestController(state.returnRoute, { action: "return", operationId: state.returnRoute.operationId, sessionText, execution, state, cwd: ctx.cwd, sourcePid: process.pid, expectedModel: selectedModel(ctx), sessionName: ctx.sessionManager.getSessionName() });
+      result = await requestController(state.returnRoute, { action: "return", operationId: state.returnRoute.operationId, sessionText, execution, state, cwd: ctx.cwd, sourcePid: process.pid, expectedModel: selectedModel(ctx), sessionName: ctx.sessionManager.getSessionName(), placement: sourcePlacement(herdr) });
     } catch (error) {
       const uncertain = error instanceof UnknownRemoteOutcome;
       try { writeFileSync(receipt, JSON.stringify({ ok: false, uncertain, error: String(error) }), { mode: 0o600 }); } catch { /* The persisted pending marker still fences this source. */ }
@@ -330,14 +341,14 @@ export default function teleport(pi: ExtensionAPI) {
     label: "Teleport",
     description: [
       "Use teleport to move this persisted Pi session between local directories, Git worktrees, and remote machines.",
-      "For remote moves, use jump with an ssh://SSH_ALIAS/absolute/directory target, then back to return through the recorded SSH channel. Remote moves require Herdr on both machines and the current Teleport installation on the destination. Do not change Pi versions to make a move.",
+      "For remote moves, use jump with an ssh://MACHINE/absolute/directory target, then back to return through the recorded SSH channel. Remote moves require Herdr on both machines and the current Teleport installation on the destination. Do not change Pi versions to make a move.",
       "Use Teleport whenever work needs to continue from another folder or repository; use create followed by jump when a feature or fix should be isolated in its own worktree.",
       "Use back to return, then remove to safely clean up a Teleport-owned worktree. Remove requires resourceId from create or history. Prefer this tool over shell cd because Teleport moves the active session and preserves its navigation history.",
       "Local worktree operations use Git and leave Herdr panels unchanged. Local moves continue Pi in the current terminal.",
     ].join(" "),
     parameters: Type.Object({
       action: StringEnum(["jump", "back", "history", "create", "remove"] as const),
-      target: Type.Optional(Type.String({ description: "For jump: a local directory or ssh://SSH_ALIAS/absolute/directory. Use an existing trusted OpenSSH alias also configured as an enabled Herdr machine." })),
+      target: Type.Optional(Type.String({ description: "For jump: a local directory or ssh://MACHINE/absolute/directory. MACHINE is the SSH target of a saved Herdr machine; in Herdr App, its name from `hc machine ls` also works." })),
       branch: Type.Optional(Type.String()),
       base: Type.Optional(Type.String()),
       path: Type.Optional(Type.String()),
