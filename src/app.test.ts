@@ -1,7 +1,7 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { runHerdr } from "./herdr.ts";
-import { assertAppHost, runAppProxy } from "./app.ts";
+import { appPlacement, assertAppHost, runAppProxy } from "./app.ts";
 import { remoteMachine } from "./remote.ts";
 
 vi.mock("node:child_process", () => ({ execFileSync: vi.fn() }));
@@ -29,6 +29,29 @@ test("App machine discovery consumes native profile names and sessions, not lega
   ] }));
   expect(remoteMachine("worker-ssh", app)).toEqual({ machine: "worker", remoteSession: "remote-session" });
   expect(calls()).toEqual([["hc", ["machine", "ls", "--json"]]]);
+});
+
+test("a Herdr machine name resolves to its saved SSH target", () => {
+  vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ machines: [
+    { name: "laptop-wsl", target: "mesh-zinlaptop-wsl", session: null, via: false, temporary: false },
+    { name: "vps", target: "mesh-vps", session: null, via: false, temporary: false },
+  ] }));
+  expect(remoteMachine("laptop-wsl", app)).toEqual({ machine: "laptop-wsl", remoteSession: "default", target: "mesh-zinlaptop-wsl" });
+  expect(remoteMachine("mesh-vps", app)).toEqual({ machine: "vps", remoteSession: "default" });
+  // Resolving a name needs no SSH call.
+  expect(calls().every(([command]) => command === "hc")).toBe(true);
+});
+
+test("an unreachable target reports SSH's reason and the usable machines, not the encoded command", () => {
+  vi.mocked(execFileSync)
+    .mockReturnValueOnce(JSON.stringify({ machines: [
+      { name: "laptop-wsl", target: "mesh-zinlaptop-wsl", via: false, temporary: false },
+      { name: "sandbox", target: "mesh-sandbox", via: false, temporary: true },
+    ] }))
+    .mockImplementationOnce(() => { throw Object.assign(new Error("Command failed: ssh -T laptop node -e \"eval(Buffer.from('Y29uc3Q','base64'))\""), { stdout: "", stderr: "ssh: Could not resolve hostname laptop: No such host is known.\r\n" }); });
+  let message = "";
+  try { remoteMachine("laptop", app); } catch (error) { message = (error as Error).message; }
+  expect(message).toBe("Teleport cannot reach laptop: ssh: Could not resolve hostname laptop: No such host is known. Use a Herdr machine name or its SSH target: laptop-wsl (mesh-zinlaptop-wsl). The source has not moved.");
 });
 
 test("App routing rejects a window that does not contain the calling terminal", () => {
@@ -139,4 +162,18 @@ test("App lists only terminals in the addressed local space", () => {
     { pane_id: "t7", tab_id: "tb4", workspace_id: "sp3" },
     { pane_id: "t9", tab_id: "tb4", workspace_id: "sp3" },
   ]);
+});
+
+test("the source placement names its App space and a named tab, not a numbered position", () => {
+  vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ spaces: [{ id: "sp3", name: "pi-agent-ide · LPT-1442", machine: null, tabs: [{ id: "tb4", name: "LPT-1442 node-pty", terminals: [{ terminal: "t7", pane: "p1" }] }] }] }));
+  expect(appPlacement(app)).toEqual({ space: "pi-agent-ide · LPT-1442", tab: "LPT-1442 node-pty" });
+  vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ spaces: [{ id: "sp3", name: "pi-agent-ide", machine: null, tabs: [{ id: "tb4", name: "2", terminals: [{ terminal: "t7", pane: "p1" }] }] }] }));
+  expect(appPlacement(app)).toEqual({ space: "pi-agent-ide" });
+});
+
+test("a mirrored space gets its own first tab name", () => {
+  vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ space: "worker/sp9", tab: "worker/tb9", terminal: "worker/t9" }));
+  runHerdr({ ...app, appMachine: "worker" }, ["workspace", "create", "--cwd", "/checkout", "--label", "space name", "--tab-label", "tab name", "--no-focus"]);
+  const [, args] = calls()[0];
+  expect(args).toEqual(["do", "space.new", JSON.stringify({ folder: "/checkout", name: "space name", tab: "tab name", machine: "worker", focus: false })]);
 });
