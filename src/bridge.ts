@@ -5,8 +5,8 @@ import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mergeMachineResources, prepareHerdrArrival, preserveHerdrSourceWorkspace, readState, writeState, type TeleportState } from "./core.ts";
-import { assertHerdrContext, guardedLaunch, readHerdrPane, runHerdr, shellOwnsForeground, withOutput, type HerdrContext } from "./herdr.ts";
+import { mergeMachineResources, prepareHerdrArrival, preserveHerdrSourceWorkspace, readState, writeState, type ArrivalPlacement, type TeleportState } from "./core.ts";
+import { assertHerdrContext, guardedLaunch, readHerdrPane, runCore, runHerdr, shellOwnsForeground, withOutput, type HerdrContext } from "./herdr.ts";
 import type { TeleportExecution } from "./output.ts";
 import { agentDirectory, arrivalGuardFile, requestController, MAX_PACKET, hasSessionProcess, qualifyLocation, relocateSession, runtimeFingerprint, UnknownRemoteOutcome, remoteNodeCommand, waitForForward, sshOptions, validateReady, type ReadyIdentity, type RemoteMove, type ReturnRoute, type ModelIdentity } from "./remote.ts";
 
@@ -18,7 +18,15 @@ type Arrival = {
   fingerprint: string; from: string; to: string; execution: TeleportExecution; piCommand?: string[];
   expectedModel: ModelIdentity;
   dormantSource?: { operationId: string; sessionFile: string; cwd: string; snapshot: string };
+  placement?: ArrivalPlacement;
 };
+/** Accept only plain names from the other endpoint. */
+function validPlacement(value: unknown): ArrivalPlacement | undefined {
+  const placement = value as ArrivalPlacement | undefined;
+  if (!placement || typeof placement.space !== "string" || !placement.space.trim() || placement.space.length > 200) return undefined;
+  if (placement.tab !== undefined && (typeof placement.tab !== "string" || !placement.tab.trim() || placement.tab.length > 200)) return { space: placement.space };
+  return placement.tab === undefined ? { space: placement.space } : { space: placement.space, tab: placement.tab };
+}
 type Prepared = {
   operationId: string; sessionId: string; dir: string; stateDir: string; sessionFile: string; cwd: string; agentDir: string;
   location: HerdrContext; rollbackArgs: string[]; fingerprint: string;
@@ -95,7 +103,7 @@ export function stageArrival(input: Arrival): Prepared {
   writeFileSync(sessionFile, text, { mode: 0o600, flag: "wx" });
   let destination: ReturnType<typeof prepareHerdrArrival> | undefined;
   try {
-    destination = prepareHerdrArrival(input.connection, cwd, input.sessionName);
+    destination = prepareHerdrArrival(input.connection, cwd, input.sessionName, validPlacement(input.placement));
     const prepared: Prepared = { operationId: input.operationId, sessionId: input.sessionId, dir, stateDir, sessionFile, cwd, agentDir: agentDirectory(), location: destination.location, rollbackArgs: destination.rollbackArgs, fingerprint: input.fingerprint };
     save(join(dir, "prepared.json"), prepared);
     const state = structuredClone(input.state);
@@ -141,10 +149,18 @@ export function abortArrival(prepared: Prepared): void {
 
 export type SessionCleanup = { sourcePid: number; sessionFile: string; dev: number; ino: number };
 
+/**
+ * How long a worker waits for the source Pi to exit after a confirmed handoff. Pi shuts down on its own,
+ * but its shutdown hooks may first stop the agent's tool processes, which can take far longer than a moment.
+ */
+export const SOURCE_EXIT_LIMIT_MS = 60_000;
+/** How often a controller checks over SSH that its destination terminal still exists. */
+export const DESTINATION_CHECK_MS = 60_000;
+
 /** Delete only the recorded transcript after its source process has exited. */
 export async function retireSessionFile(input: SessionCleanup): Promise<void> {
   if (!Number.isSafeInteger(input.sourcePid) || input.sourcePid <= 0) throw new Error("Invalid source process identity.");
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + SOURCE_EXIT_LIMIT_MS;
   while (true) {
     try { process.kill(input.sourcePid, 0); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") break; throw error; }
@@ -162,31 +178,57 @@ function appSourceGone(input: AppSourceCleanup): boolean {
   try { process.kill(input.sourcePid, 0); return false; }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
 }
-function assertAppSource(input: AppSourceCleanup): void {
-  if (input.context.backend !== "app" || !Number.isSafeInteger(input.sourcePid) || input.sourcePid <= 0) throw new Error("Invalid App cleanup ownership.");
+async function waitForAppSourceExit(input: AppSourceCleanup): Promise<boolean> {
+  const deadline = Date.now() + SOURCE_EXIT_LIMIT_MS;
+  while (!appSourceGone(input)) {
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return true;
+}
+/** The source pane holds the recorded Pi, only its shell (after Pi exited), or something Teleport must not touch. */
+function appSourceOccupant(input: AppSourceCleanup): "source" | "shell" | "other" {
   assertHerdrContext(input.context);
   const info = runHerdr(input.context, ["pane", "process-info", "--pane", input.context.paneId]).process_info;
-  if (!hasSessionProcess(info?.foreground_processes, input.sourcePid, input.cwd, input.sessionFile) && !(appSourceGone(input) && shellOwnsForeground(info))) throw new Error("The source pane no longer has its recorded occupant; it was left unchanged.");
+  if (hasSessionProcess(info?.foreground_processes, input.sourcePid, input.cwd, input.sessionFile)) return "source";
+  return appSourceGone(input) && shellOwnsForeground(info) ? "shell" : "other";
+}
+function assertCleanupOwnership(input: AppSourceCleanup): void {
+  if (input.context.backend !== "app" || !Number.isSafeInteger(input.sourcePid) || input.sourcePid <= 0) throw new Error("Invalid App cleanup ownership.");
+}
+function assertAppSource(input: AppSourceCleanup): void {
+  if (appSourceOccupant(input) === "other") throw new Error("The source pane no longer has its recorded occupant; it was left unchanged.");
 }
 
 /** Close only the original App occupant and wait for its process to exit. */
 export async function retireAppSource(input: AppSourceCleanup): Promise<void> {
-  assertAppSource(input);
-  let paneError: unknown;
-  try { runHerdr(input.context, ["pane", "close", input.context.paneId]); }
-  catch (error) { paneError = error; }
-  const deadline = Date.now() + 5_000;
-  while (!appSourceGone(input)) {
-    if (Date.now() >= deadline) throw new Error("The source process has not exited; its transcript is retained.");
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  if (paneError) throw paneError;
+  assertCleanupOwnership(input);
   const route = input.retireRoute || input.context.appRoute;
+  // A pane that cannot be observed after its program exited was closed by that exit.
+  const observe = (): ReturnType<typeof appSourceOccupant> | Error => {
+    try { return appSourceOccupant(input); }
+    catch (error) { return error instanceof Error ? error : new Error(String(error)); }
+  };
+  let occupant = observe();
+  if (occupant !== "source" && occupant !== "shell" && !appSourceGone(input)) {
+    // The source Pi shuts itself down after the handoff. Until then a Windows observation can be
+    // empty or fail (a descendant was unreadable), and `pwsh -NoExit -Command pi` keeps its shell afterwards.
+    if (!await waitForAppSourceExit(input)) throw occupant instanceof Error ? occupant : new Error("The source process has not exited and its pane could not be verified; it was left unchanged.");
+    occupant = observe();
+  }
+  if (occupant === "other") throw new Error("The source pane no longer has its recorded occupant; it was left unchanged.");
+  if (!(occupant instanceof Error)) {
+    let paneError: unknown;
+    try { runHerdr(input.context, ["pane", "close", input.context.paneId]); }
+    catch (error) { paneError = error; }
+    if (!await waitForAppSourceExit(input)) throw new Error("The source process has not exited; its transcript is retained.");
+    if (paneError) throw paneError;
+  }
   if (route) await requestController(route, { action: "app-retired", operationId: route.operationId });
 }
 /** Run desktop cleanup from an independent SSH process, outside the retiring terminal's job. */
 export async function retireDesktopSource(input: AppSourceCleanup): Promise<void> {
-  if (input.context.backend !== "app" || !Number.isSafeInteger(input.sourcePid) || input.sourcePid <= 0) throw new Error("Invalid App cleanup ownership.");
+  assertCleanupOwnership(input);
   try { assertAppSource(input); }
   catch (error) {
     // The source may already have exited and its terminal disappeared. Do not touch another pane.
@@ -195,6 +237,23 @@ export async function retireDesktopSource(input: AppSourceCleanup): Promise<void
   }
   preserveHerdrSourceWorkspace(input.context, input.cwd);
   await retireAppSource(input);
+}
+/**
+ * False only when the destination Pi has exited or its core reports the terminal finished or gone; other
+ * failures throw. The process matters too: a pane started through a login shell keeps that shell after Pi quits.
+ */
+export function destinationAlive(location: HerdrContext, pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("Invalid destination process identity.");
+  try { process.kill(pid, 0); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error; }
+  try {
+    const terminal = runCore(location, ["get", location.paneId]);
+    return terminal.address === location.paneId && terminal.state === "live";
+  } catch (error) {
+    const stderr = String((error as { stderr?: Buffer | string }).stderr ?? "");
+    if ((error as { status?: number }).status === 3 && stderr.includes(`no terminal "${location.paneId}"`)) return false;
+    throw error;
+  }
 }
 function endpoint(action: string, input: any): any {
   if (action === "reserve") {
@@ -211,6 +270,7 @@ function endpoint(action: string, input: any): any {
   if (action === "commit") { commitArrival(input); return { committed: true }; }
   if (action === "abort") { abortArrival(input); return { aborted: true }; }
   if (action === "status") return { committed: existsSync(join(input.dir, "committed.json")) };
+  if (action === "alive") return { live: destinationAlive(input.location, input.pid) };
   if (action === "lookup") {
     if (!/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(input.sessionId) || !/^[a-f0-9-]+$/.test(input.operationId)) throw new Error("Invalid handoff receipt identity.");
     const path = join(agentDirectory(), "teleport", input.sessionId, "arrivals", input.operationId, "prepared.json");
@@ -297,6 +357,9 @@ async function controller(config: string): Promise<void> {
   let closed = false;
   let reconnects = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let destinationWatch: ReturnType<typeof setInterval> | undefined;
+  let checkingDestination = false;
+  const readyPids = new Map<string, number>();
   const server = createServer((socket) => {
     let content = "";
     let received = false;
@@ -314,6 +377,7 @@ async function controller(config: string): Promise<void> {
     try {
       const packet = JSON.parse(content);
       if (typeof packet.token !== "string" || packet.token.length !== token.length || !timingSafeEqual(Buffer.from(packet.token), Buffer.from(token))) throw new Error("Unauthenticated Teleport callback.");
+      if (packet.action === "probe") { socket.end(`${JSON.stringify({ ok: true })}\n`); return; }
       if (packet.action === "app") {
         const result = runAppProxy(move.herdr, move.machine, packet.args);
         socket.end(`${JSON.stringify({ ok: true, result })}\n`);
@@ -343,6 +407,7 @@ async function controller(config: string): Promise<void> {
           try { info = await paneProcess(arrival.expected.paneId, arrival.remote); }
           catch { throw new UnknownRemoteOutcome("Destination process observation is unavailable; its handoff remains pending."); }
           assertReadyProcess(info, packet.pid, arrival.expected.cwd, arrival.expected.sessionFile);
+          readyPids.set(packet.operationId, packet.pid);
           if (arrival === pending) pending.resolve();
           socket.end(`${JSON.stringify({ ok: true })}\n`);
         } catch (error) {
@@ -366,6 +431,7 @@ async function controller(config: string): Promise<void> {
           state, connection: move.herdr, callback: { socket: localSocket, token }, fingerprint: move.fingerprint,
           dormantSource: { operationId: move.id, sessionFile: move.sourceSession, cwd: move.sourceCwd, snapshot: move.sessionText },
           from: qualifyLocation(packet.cwd, move.host), to: qualifyLocation(move.sourceCwd, state.machine), execution: packet.execution, expectedModel: packet.expectedModel, piCommand: move.localCommand,
+          placement: packet.placement,
         };
         arrival = stageArrival(input);
         await awaitReady(arrival, false);
@@ -475,10 +541,30 @@ async function controller(config: string): Promise<void> {
     const port = await waitForForward(transport, dynamic);
     if (dynamic) reservation = { dir: "", socket: `tcp://127.0.0.1:${port}` };
   }
+  /**
+   * The controller exists for the destination: its return route and, for App, its UI proxy. Once the
+   * destination Pi exits or its terminal ends, nothing can use them, so this terminal exits too.
+   * An unreachable destination proves nothing and keeps the route.
+   */
+  function watchDestination(): void {
+    const pid = outward && readyPids.get(outward.operationId);
+    if (move.herdr.backend !== "app" || !outward || !pid) return;
+    const destination = outward;
+    destinationWatch = setInterval(() => {
+      if (closed || returning || checkingDestination) return;
+      checkingDestination = true;
+      remoteEndpoint<{ live?: boolean }>(move, "alive", { location: destination.location, pid }).then((result) => {
+        if (result.live !== false || closed || returning) return;
+        save(join(dirname(config), "destination-ended.json"), { at: Date.now(), paneId: destination.location.paneId });
+        cleanup();
+      }, () => { /* Keep the route while the destination cannot be observed. */ }).finally(() => { checkingDestination = false; });
+    }, DESTINATION_CHECK_MS);
+  }
   function cleanup(): void {
     if (closed) return;
     closed = true;
     releasePrepared();
+    if (destinationWatch) clearInterval(destinationWatch);
     if (reconnectTimer) clearTimeout(reconnectTimer);
     server.close();
     tunnel?.kill("SIGTERM");
@@ -506,6 +592,7 @@ async function controller(config: string): Promise<void> {
     outward = await remoteEndpoint<Prepared>(move, "stage", {
       operationId: move.id, sessionId: move.sessionId, sessionText: move.sessionText, path: move.path, sessionName: move.sessionName,
       state, execution: move.execution, expectedModel: move.expectedModel, connection: remoteConnection, piCommand: move.remoteCommand, callback: { socket: reservation.socket, token }, fingerprint: move.fingerprint, from: source, to: target,
+      placement: move.placement,
     } satisfies Arrival);
     save(join(dirname(config), "destination.json"), outward);
     await awaitReady(outward, true);
@@ -528,6 +615,7 @@ async function controller(config: string): Promise<void> {
     localState.history.push({ from: source, to: target, at: Date.now(), status: "completed", fromHerdr: move.herdr, toHerdr: outward.location });
     writeState(move.stateDir, localState);
     save(receipt, { ok: true, destination: target, versions: { source: move.localVersion, destination: move.remoteVersion } });
+    watchDestination();
   } catch (error) {
     if (committed) {
       save(receipt, { ok: true, destination: qualifyLocation(move.path, move.host), warning: `Destination committed; local receipt update needs inspection: ${String(error)}` });
