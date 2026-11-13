@@ -9,7 +9,7 @@ Teleport exposes one `teleport` tool, not a user-facing slash command.
 
 | Action | Purpose |
 |--------|---------|
-| `jump` | Move to an existing local directory or `ssh://SSH_ALIAS/absolute/path`. |
+| `jump` | Move to an existing local directory or `ssh://MACHINE/absolute/path`, where `MACHINE` is the SSH target of a saved Herdr machine or, from Herdr App, its machine name. |
 | `back` | Return through the recorded route. |
 | `history` | List completed moves and managed worktree ownership. |
 | `create` | Create and record an owned Git worktree. |
@@ -79,6 +79,12 @@ hosts the App window for a remote source, Teleport instead verifies the source's
 workspace, tab and terminal against that window and uses its local desktop. Pane IDs
 are server-scoped; inherited local IDs must not identify a remote pane.
 
+A Herdr App space belongs to one machine, so a remote arrival cannot join the source
+space. It opens in the destination machine's space with the source space's name, or in
+a new space with that name whose folder is the target directory. Its tab takes the
+source tab's name; a numbered tab name falls back to the session name. A return through
+`back` mirrors the space it leaves the same way.
+
 ## Remote activation and return
 
 Remote preflight runs the destination's configured `pi` from the target directory.
@@ -114,6 +120,24 @@ an independent SSH process to retire the Windows source outside its terminal job
 The controller attempts up to three reconnections after a tunnel disconnect.
 The original computer must remain available. If reconnection fails, the remote
 transcript survives, but automatic return is not guaranteed.
+
+### Terminals left on the source machine
+
+After a confirmed move from a Herdr App terminal, the source machine keeps one
+controller terminal per move: a `node bridge.ts controller` process with its `ssh -N -R`
+forward. The moved agent needs it. It carries the return route for `back` and, when the
+destination is not the App's own desktop, the destination's App window requests, such as
+the tab for a later move. Do not close it while the moved agent runs. It exits by itself
+after a return, after a failed move, or once it observes that the destination Pi has exited
+or its terminal has ended; it checks over SSH once a minute and keeps the route while the
+destination cannot be reached. Once it exits, `back` from that destination is no longer
+available and reports that its return route does not answer; `jump` still reaches the source.
+
+The source Pi exits after the commit. Its pane is closed once Pi has exited: a cleanup
+worker waits up to a minute for the exit, then closes the pane if only its shell remains,
+for example after `pwsh -NoExit -Command pi`. It never closes a pane that runs another
+program. Session and pane cleanup receipts are saved under
+`$PI_CODING_AGENT_DIR/teleport/<session-id>/cleanup/`.
 
 ## State and uncertain outcomes
 
