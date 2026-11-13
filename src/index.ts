@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { SessionManager, VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { SessionManager, SettingsManager, VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import { ownsExecution, registerTeleportOutput, type TeleportExecution, type TeleportOutcome } from "./output.ts";
@@ -13,6 +13,13 @@ import { assertAppHost } from "./app.ts";
 import { StringEnum } from "./string-enum.ts";
 import { UnknownRemoteOutcome, agentDirectory, piCommand, type ModelIdentity, confirmArrival, extensionFile, parseTarget, probeRemote, qualifyLocation, remoteMachine, requestController, runtimeFingerprint, shellQuote as quote, startAppSourceCleanup, startRemoteMove, startSessionCleanup, workerFile } from "./remote.ts";
 
+/** Restore the destination's default local shell when the source could not expose it. */
+export function arrivalTools(source: string, destination: string, active: string[], available: Array<{ name: string; exposure?: string }>, settings: NonNullable<Parameters<typeof SettingsManager.inMemory>[0]>, sourceBashHidden = false): string[] {
+  if (source !== "win32" || destination === "win32" || !sourceBashHidden) return active;
+  const defaults = SettingsManager.inMemory(settings).getDefaultTools();
+  if ((defaults && !defaults.includes("bash")) || active.includes("bash") || !available.some((tool) => tool.name === "bash" && tool.exposure !== "hidden")) return active;
+  return [...active, "bash"];
+}
 function dataDir(sessionId: string): string { return join(process.env.PI_CODING_AGENT_DIR ?? join(process.env.HOME ?? homedir(), ".pi", "agent"), "teleport", sessionId); }
 function serialize(ctx: ExtensionCommandContext, target: string): { source: string; destination: string } {
   const source = ctx.sessionManager.getSessionFile();
@@ -134,7 +141,7 @@ export default function teleport(pi: ExtensionAPI) {
     const remote = probeRemote(host, path, implementation);
     const id = randomUUID();
     const state = readState(dir);
-    const move = { id, host, path, ...profile, sourceCwd: ctx.cwd, sourceSession: source, sourcePid: process.pid, sessionText, sessionId, execution, sessionName: ctx.sessionManager.getSessionName(), state, stateDir: dir, herdr, fingerprint: implementation, remoteWorker: remote.worker, remoteAgentDir: remote.agentDir, localVersion: VERSION, remoteVersion: remote.version, localCommand: piCommand(), remoteCommand: remote.command, remoteCore: remote.core, remotePlatform: remote.platform, expectedModel: selectedModel(ctx) };
+    const move = { id, host, path, ...profile, sourceCwd: ctx.cwd, sourceSession: source, sourcePid: process.pid, sessionText, sessionId, execution, sessionName: ctx.sessionManager.getSessionName(), state, stateDir: dir, herdr, fingerprint: implementation, remoteWorker: remote.worker, remoteAgentDir: remote.agentDir, localVersion: VERSION, remoteVersion: remote.version, localCommand: piCommand(), remoteCommand: remote.command, remoteCore: remote.core, remotePlatform: remote.platform, sourceBashHidden: pi.getAllTools().some((tool) => tool.name === "bash" && tool.exposure === "hidden"), expectedModel: selectedModel(ctx) };
     state.pendingRemote = { id, receipt: join(dir, "bridges", id, "result.json") };
     writeState(dir, state);
     // Keep the captured source state independent from the in-flight marker.
@@ -168,7 +175,7 @@ export default function teleport(pi: ExtensionAPI) {
     writeState(dir, state);
     let result: unknown;
     try {
-      result = await requestController(state.returnRoute, { action: "return", operationId: state.returnRoute.operationId, sessionText, execution, state, cwd: ctx.cwd, sourcePid: process.pid, expectedModel: selectedModel(ctx), sessionName: ctx.sessionManager.getSessionName() });
+      result = await requestController(state.returnRoute, { action: "return", operationId: state.returnRoute.operationId, sessionText, execution, state, cwd: ctx.cwd, sourcePlatform: process.platform, sourceBashHidden: pi.getAllTools().some((tool) => tool.name === "bash" && tool.exposure === "hidden"), sourcePid: process.pid, expectedModel: selectedModel(ctx), sessionName: ctx.sessionManager.getSessionName() });
     } catch (error) {
       const uncertain = error instanceof UnknownRemoteOutcome;
       try { writeFileSync(receipt, JSON.stringify({ ok: false, uncertain, error: String(error) }), { mode: 0o600 }); } catch { /* The persisted pending marker still fences this source. */ }
@@ -491,6 +498,8 @@ export default function teleport(pi: ExtensionAPI) {
     }
     const handoffFile = process.env.PI_TELEPORT_HANDOFF;
     let arrivalExecution: TeleportExecution | undefined;
+    let sourcePlatform: string | undefined;
+    let sourceBashHidden = false;
     if (handoffFile) {
       delete process.env.PI_TELEPORT_HANDOFF;
       let handoff: any;
@@ -498,6 +507,8 @@ export default function teleport(pi: ExtensionAPI) {
       try {
         handoff = JSON.parse(readFileSync(handoffFile, "utf8"));
         arrivalExecution = handoff.execution;
+        sourcePlatform = handoff.sourcePlatform;
+        sourceBashHidden = handoff.sourceBashHidden === true;
         if (!arrivalExecution || !ownsExecution(ctx, arrivalExecution)) throw new Error("Teleport arrival does not own an execution on this session branch.");
         herdr = getHerdrContext();
         if (!herdr) throw new Error("Destination Pi is not running in its own native Herdr pane.");
@@ -552,6 +563,9 @@ export default function teleport(pi: ExtensionAPI) {
       writeState(dir, state);
     }
     if (handoffFile) {
+      const active = pi.getActiveTools();
+      const next = arrivalTools(sourcePlatform ?? "", process.platform, active, pi.getAllTools(), pi.getSettings(), sourceBashHidden);
+      if (next !== active) pi.setActiveTools(next);
       const route = state.history.at(-1);
       ctx.ui.setStatus("teleport-location", `Teleport · ${state.machine ?? "local"}`);
       ctx.ui.notify(`✦ Agent teleported: ${route?.from} → ${route?.to}`, "info");

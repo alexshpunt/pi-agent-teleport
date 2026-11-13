@@ -87,6 +87,10 @@ endings do not affect the fingerprint. The probe stops after three minutes if Pi
 not exited. Other packages, settings, provider credentials and repository contents
 are not transferred.
 
+After a Windows-to-Unix handoff, Teleport enables the destination's default
+`bash` tool when it was hidden on the source and is available on the destination.
+An explicitly disabled or hidden destination tool stays disabled.
+
 A destination readiness callback must match the operation, session ID, session file,
 cwd, agent directory and owned pane. Teleport also checks its native foreground
 process, restores the source's selected provider, model ID and thinking level after
