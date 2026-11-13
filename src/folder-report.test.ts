@@ -13,8 +13,10 @@ test("reports a Windows folder with forward slashes after its drive", () => {
   expect(folderReport("C:\\Users\\me\\dev", { host: "ZinLaptop", windows: true })).toBe("\x1b]7;file://ZinLaptop/C:/Users/me/dev\x1b\\");
 });
 
-test("keeps a UNC share's server as the host", () => {
-  expect(folderReport("\\\\server\\share\\x", { host: "ZinLaptop", windows: true })).toBe("\x1b]7;file://server/share/x\x1b\\");
+test("reports UNC shares with the local host and an encoded path", () => {
+  expect(folderReport("\\\\server\\share\\x", { host: "ZinLaptop", windows: true })).toBe("\x1b]7;file://ZinLaptop/%5C%5Cserver%5Cshare%5Cx\x1b\\");
+  expect(folderReport("\\\\server\\share", { host: "ZinLaptop", windows: true })).toBe("\x1b]7;file://ZinLaptop/%5C%5Cserver%5Cshare\x1b\\");
+  expect(folderReport("\\\\server\\share\\проект #1%", { host: "ZinLaptop", windows: true })).toBe("\x1b]7;file://ZinLaptop/%5C%5Cserver%5Cshare%5C%D0%BF%D1%80%D0%BE%D0%B5%D0%BA%D1%82%20%231%25\x1b\\");
 });
 
 test("writes only from the TUI to a terminal", () => {
