@@ -4,6 +4,10 @@
 
 - Create and remove worktrees from Windows Pi in WSL folders using the distribution's Git, without changing global Git configuration.
 - Report the session's folder to the terminal with OSC 7 when a session starts and after every move, and clear it when Pi quits, so Herdr App shows the agent under its current folder, including Pi on Windows. Only the interactive TUI on a terminal writes it.
+- Accept a Herdr App machine name as a remote target (`ssh://laptop-wsl/...`) besides its SSH alias. An unreachable target reports SSH's own reason and lists the usable machines.
+- Open a remote arrival from Herdr App in the destination machine's space named like the source space, created when missing, in a tab named like the source tab, instead of a space chosen by folder or named after the session.
+- Close the Windows source pane after Pi exits, also when PowerShell started Pi and stays behind. Wait up to a minute for the source Pi to exit before cleaning up its pane and transcript.
+- End a move's controller terminal on the source machine once the destination Pi exits or its terminal ends. A later `back` there reports that its return route does not answer, before anything moves.
 
 ## 0.2.11 - 2026-11-09
 

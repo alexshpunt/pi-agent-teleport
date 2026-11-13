@@ -66,8 +66,11 @@ Before moving:
 
 - Install the same Teleport build on both machines. Pi versions may differ; Teleport
   does not upgrade or downgrade either installation.
-- Run Herdr on both machines. Add the destination as a saved direct Herdr machine
-  using the same SSH alias as the address. When moving from an App-managed remote
+- Run Herdr on both machines. Add the destination as a saved direct Herdr machine.
+  Address it by its SSH alias. From a Herdr App terminal, its machine name works too,
+  as `hc machine ls` lists them: `ssh://laptop-wsl/root/dev/project` and
+  `ssh://mesh-zinlaptop-wsl/root/dev/project` reach the same machine. Native Herdr
+  machine IDs are not accepted as targets. When moving from an App-managed remote
   terminal to the computer hosting its window, Teleport identifies that desktop from
   the source workspace, tab and terminal instead.
 - Set up key-based SSH access and host-key trust. Put connection options in SSH config.
