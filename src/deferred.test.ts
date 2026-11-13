@@ -39,6 +39,7 @@ async function fixture() {
     registerCommand: (name: string, definition: any) => { commands.set(name, definition); },
     registerTool: (definition: ToolDefinition) => { tool = definition; }, registerEntryRenderer: () => {},
     getThinkingLevel: () => "off",
+    getAllTools: () => [{ name: "bash", exposure: "direct" }],
     appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
     sendUserMessage: (text: string) => { command = text; },
     sendMessage: (message: any) => { messages.push(message); events.get("message_end")!({ message: { ...message, role: "custom" } }, ctx); },
