@@ -13,7 +13,8 @@ export function folderReport(cwd: string, options: { host?: string; windows?: bo
   // file server. Otherwise the URI is indistinguishable from an SSH report.
   const path = url.host ? `/${encodeURIComponent(fileURLToPath(url, { windows: true }))}` : url.pathname;
   const target = `file://${encodeURIComponent(options.host ?? hostname())}${path}`;
-  return `\x1b]7;${target}\x1b\\`;
+  // The receiver must not bind a replay or an early report to the wrong PID.
+  return `\x1b]7;${target}?herdr-pid=${process.pid}\x1b\\`;
 }
 
 /** An empty OSC 7: the session no longer reports a folder. */

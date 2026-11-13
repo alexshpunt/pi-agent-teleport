@@ -51,9 +51,11 @@ In an interactive terminal, Teleport reports the session's folder with the stand
 OSC 7 sequence (`ESC ] 7 ; file://<host>/<path> ESC \`) when a session starts and after
 every move, and clears it when Pi quits. Terminals that read OSC 7, such as Herdr App,
 show the agent under its current folder, also on Windows, where Pi's process folder is
-not visible to them. For a Windows UNC folder, Teleport puts the reporting machine in
-the URI's host and percent-encodes the UNC path. Herdr understands this form; other
-terminals may not. Print, JSON and RPC modes write nothing.
+not visible to them. The URI includes the reporter's PID as `herdr-pid` in its query,
+so Herdr can wait for that process and reject an old replay. For a Windows UNC folder,
+Teleport puts the reporting machine in the URI's host and percent-encodes the UNC path.
+Herdr understands this form; other terminals may not. Print, JSON and RPC modes write
+nothing.
 
 ## Remote machines
 
