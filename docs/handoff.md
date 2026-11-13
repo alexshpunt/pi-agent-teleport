@@ -175,3 +175,8 @@ npm run test:integration # real Pi process tests
 The launcher regressions in `src/launch.test.ts` execute real shell commands.
 PowerShell cases use Windows PowerShell on Windows and `pwsh` on Unix; they skip
 when that shell is unavailable.
+On Windows with WSL installed, set `TELEPORT_TEST_WSL_DISTRO` to an installed
+distribution name and run `npx vitest run src/wsl-worktree.test.ts`. This opt-in
+regression uses disposable repositories to check both WSL UNC aliases, paths with
+spaces, Linux Git compatibility, linked-source creation, dirty refusal, removal and
+unchanged Windows global Git configuration.

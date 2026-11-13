@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Create and remove worktrees from Windows Pi in WSL folders using the distribution's Git, without changing global Git configuration.
 - Report the session's folder to the terminal with OSC 7 when a session starts and after every move, and clear it when Pi quits, so Herdr App shows the agent under its current folder, including Pi on Windows. Only the interactive TUI on a terminal writes it.
 
 ## 0.2.11 - 2026-11-09
