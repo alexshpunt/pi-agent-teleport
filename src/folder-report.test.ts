@@ -1,5 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { createServer } from "node:net";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import teleport from "./index.ts";
@@ -37,7 +38,14 @@ test("writes only from the TUI to a terminal", () => {
 });
 
 let root: string;
-beforeEach(() => { mkdirSync(resolve(".tmp"), { recursive: true }); root = mkdtempSync(resolve(".tmp/folder-report-")); vi.stubEnv("PI_CODING_AGENT_DIR", join(root, "agent")); });
+beforeEach(() => {
+  mkdirSync(resolve(".tmp"), { recursive: true });
+  root = mkdtempSync(resolve(".tmp/folder-report-"));
+  vi.stubEnv("PI_CODING_AGENT_DIR", join(root, "agent"));
+  vi.stubEnv("HC_TERMINAL_ID", "");
+  vi.stubEnv("HC_TERMINAL_SOCKET", "");
+  vi.stubEnv("HC_SOCKET", "");
+});
 const tty = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -65,6 +73,133 @@ function terminal() {
 
 const session = (cwd: string, mode = "tui") => ({ mode, cwd, sessionManager: { getSessionId: () => "s" }, ui: { notify: () => {} } });
 
+test("reports the process token issued by its owning core", async () => {
+  const socket = process.platform === "win32" ? `\\\\.\\pipe\\teleport-test-${process.pid}-${Date.now()}` : join(root, "core.sock");
+  const requests: unknown[] = [];
+  const server = createServer((connection) => {
+    let data = "";
+    connection.on("data", (chunk) => {
+      data += chunk.toString();
+      if (!data.includes("\n")) return;
+      const request = JSON.parse(data.slice(0, data.indexOf("\n")));
+      requests.push(request);
+      connection.end(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { token: "issued+token", in_front: null } })}\n`);
+    });
+  });
+  await new Promise<void>((resolve, reject) => server.once("error", reject).listen(socket, resolve));
+  try {
+    vi.stubEnv("HC_TERMINAL_ID", "t7");
+    vi.stubEnv("HC_TERMINAL_SOCKET", socket);
+    const fire = hooks();
+    const writes = terminal();
+    await fire("session_start", { reason: "startup" }, session("/src/main"));
+    expect(requests).toMatchObject([{ method: "terminal.process", params: { terminal: "t7", pid: process.pid } }]);
+    expect(writes).toEqual([folderReport("/src/main").replace("\x1b\\", "&herdr-token=issued%2Btoken\x1b\\")]);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+test("a delayed token cannot restore a folder after the session quits", async () => {
+  const socket = process.platform === "win32" ? `\\\\.\\pipe\\teleport-race-${process.pid}-${Date.now()}` : join(root, "race.sock");
+  let reply!: () => void;
+  let received!: () => void;
+  const requested = new Promise<void>((resolve) => { received = resolve; });
+  const server = createServer((connection) => {
+    let data = "";
+    connection.on("data", (chunk) => {
+      data += chunk.toString();
+      if (!data.includes("\n")) return;
+      const request = JSON.parse(data.slice(0, data.indexOf("\n")));
+      reply = () => connection.end(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { token: "late", in_front: null } })}\n`);
+      received();
+    });
+  });
+  await new Promise<void>((resolve, reject) => server.once("error", reject).listen(socket, resolve));
+  try {
+    vi.stubEnv("HC_TERMINAL_ID", "t7");
+    vi.stubEnv("HC_TERMINAL_SOCKET", socket);
+    const fire = hooks();
+    const writes = terminal();
+    const startup = fire("session_start", { reason: "startup" }, session("/src/old"));
+    await requested;
+    await fire("session_shutdown", { reason: "quit" }, session("/src/old"));
+    reply();
+    await startup;
+    expect(writes).toEqual([clearedFolderReport]);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("reports a token when a temporarily unavailable core recovers", async () => {
+  const socket = process.platform === "win32" ? `\\\\.\\pipe\\teleport-retry-${process.pid}-${Date.now()}` : join(root, "retry.sock");
+  const server = createServer((connection) => {
+    let input = "";
+    connection.on("data", (data) => {
+      input += data.toString();
+      if (!input.includes("\n")) return;
+      const request = JSON.parse(input.slice(0, input.indexOf("\n")));
+      connection.end(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { token: "recovered" } })}\n`);
+    });
+  });
+  try {
+    vi.stubEnv("HC_TERMINAL_ID", "t7");
+    vi.stubEnv("HC_TERMINAL_SOCKET", socket);
+    const fire = hooks();
+    const writes = terminal();
+    await fire("session_start", { reason: "startup" }, session("/src/main"));
+    expect(writes).toEqual([folderReport("/src/main")]);
+    await new Promise<void>((resolve, reject) => server.once("error", reject).listen(socket, resolve));
+    await vi.waitFor(() => expect(writes).toEqual([folderReport("/src/main"), folderReport("/src/main", { token: "recovered" })]), { timeout: 4000, interval: 25 });
+    await fire("session_shutdown", { reason: "quit" }, session("/src/main"));
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+}, 7000);
+test("a retry from an old session cannot overwrite a newer session", async () => {
+  const socket = process.platform === "win32" ? `\\\\.\\pipe\\teleport-retry-race-${process.pid}-${Date.now()}` : join(root, "retry-race.sock");
+  let attempts = 0;
+  let lateReply: (() => void) | undefined;
+  const server = createServer((connection) => {
+    let input = "";
+    connection.on("data", (data) => {
+      input += data.toString();
+      if (!input.includes("\n")) return;
+      const request = JSON.parse(input.slice(0, input.indexOf("\n")));
+      const attempt = ++attempts;
+      const respond = (token: string | null) => connection.end(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { token } })}\n`);
+      if (attempt === 1) respond(null);
+      else if (attempt === 2) lateReply = () => respond("old");
+      else respond("new");
+    });
+  });
+  await new Promise<void>((resolve, reject) => server.once("error", reject).listen(socket, resolve));
+  try {
+    vi.stubEnv("HC_TERMINAL_ID", "t7");
+    vi.stubEnv("HC_TERMINAL_SOCKET", socket);
+    const fire = hooks();
+    const writes = terminal();
+    await fire("session_start", { reason: "startup" }, session("/src/old"));
+    await vi.waitFor(() => expect(lateReply).toBeDefined(), { timeout: 4000, interval: 25 });
+    await fire("session_shutdown", { reason: "resume" }, session("/src/old"));
+    await fire("session_start", { reason: "resume" }, session("/src/new"));
+    lateReply!();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(writes).toEqual([folderReport("/src/old"), folderReport("/src/new", { token: "new" })]);
+    await fire("session_shutdown", { reason: "quit" }, session("/src/new"));
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+}, 7000);
+test("an unavailable core still reports the folder without a process token", async () => {
+  vi.stubEnv("HC_TERMINAL_ID", "t7");
+  vi.stubEnv("HC_TERMINAL_SOCKET", process.platform === "win32" ? `\\\\.\\pipe\\missing-${process.pid}` : join(root, "missing.sock"));
+  const fire = hooks();
+  const writes = terminal();
+  await fire("session_start", { reason: "startup" }, session("/src/main"));
+  expect(writes).toEqual([folderReport("/src/main")]);
+  await fire("session_shutdown", { reason: "quit" }, session("/src/main"));
+});
 test("each session start reports its folder, and only quitting clears it", async () => {
   const fire = hooks();
   const writes = terminal();
