@@ -342,16 +342,16 @@ export default function teleport(pi: ExtensionAPI) {
     description: [
       "Use teleport to move this persisted Pi session between local directories, Git worktrees, and remote machines.",
       "For remote moves, use jump with an ssh://MACHINE/absolute/directory target, then back to return through the recorded SSH channel. Remote moves require Herdr on both machines and the current Teleport installation on the destination. Do not change Pi versions to make a move.",
-      "Use Teleport whenever work needs to continue from another folder or repository; use create followed by jump when a feature or fix should be isolated in its own worktree.",
+      "Use Teleport whenever work needs to continue from another folder or repository; use create followed by jump when a feature or fix should be isolated in its own worktree. Create uses the repository of the current folder; jump into another repository first to create its worktree.",
       "Use back to return, then remove to safely clean up a Teleport-owned worktree. Remove requires resourceId from create or history. Prefer this tool over shell cd because Teleport moves the active session and preserves its navigation history.",
       "Local worktree operations use Git and leave Herdr panels unchanged. Local moves continue Pi in the current terminal.",
     ].join(" "),
     parameters: Type.Object({
       action: StringEnum(["jump", "back", "history", "create", "remove"] as const),
       target: Type.Optional(Type.String({ description: "For jump: a local directory or ssh://MACHINE/absolute/directory. MACHINE is the SSH target of a saved Herdr machine; in Herdr App, its name from `hc machine ls` also works." })),
-      branch: Type.Optional(Type.String()),
-      base: Type.Optional(Type.String()),
-      path: Type.Optional(Type.String()),
+      branch: Type.Optional(Type.String({ description: "For create: required name of the new branch; there is no default." })),
+      base: Type.Optional(Type.String({ description: "For create: Git ref to start the new branch from. Defaults to HEAD in the current folder's repository." })),
+      path: Type.Optional(Type.String({ description: "For create: destination of the new worktree, not the source repository. Relative paths resolve from the current folder. Defaults to a sibling named <current-folder>-<branch>, with characters outside letters, digits, '.', '_' and '-' in the branch replaced by '-'." })),
       resourceId: Type.Optional(Type.String()),
     }, { additionalProperties: false }),
     async execute(id, params, _signal, _onUpdate, ctx) {
