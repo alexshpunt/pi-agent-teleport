@@ -96,7 +96,7 @@ It only removes worktrees it created and recorded. Removal requires a clean chec
 with no extra panes or running commands; there is no force option. Git refuses to
 delete an unmerged branch.
 
-When Windows Pi works in a `\\\\wsl.localhost\\<distro>\\...` or `\\\\wsl$\\<distro>\\...`
+When Windows Pi works in a `\\wsl.localhost\<distro>\...` or `\\wsl$\<distro>\...`
 folder, Teleport runs Git inside that WSL distribution. Git must be installed there.
 Worktree metadata stays usable by Linux Git; no Windows `safe.directory` exception
 or global Git configuration change is needed.
