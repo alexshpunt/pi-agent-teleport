@@ -1,5 +1,5 @@
 import { hostname } from "node:os";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 /**
  * The OSC 7 sequence that tells the terminal which folder the session is in:
@@ -9,8 +9,10 @@ import { pathToFileURL } from "node:url";
  */
 export function folderReport(cwd: string, options: { host?: string; windows?: boolean } = {}): string {
   const url = pathToFileURL(cwd, { windows: options.windows ?? process.platform === "win32" });
-  // A UNC share keeps its server as the host.
-  const target = url.host ? url.href : `file://${encodeURIComponent(options.host ?? hostname())}${url.pathname}`;
+  // For UNC, identify the reporting machine in the authority rather than the
+  // file server. Otherwise the URI is indistinguishable from an SSH report.
+  const path = url.host ? `/${encodeURIComponent(fileURLToPath(url, { windows: true }))}` : url.pathname;
+  const target = `file://${encodeURIComponent(options.host ?? hostname())}${path}`;
   return `\x1b]7;${target}\x1b\\`;
 }
 
