@@ -9,7 +9,7 @@ import { ownsExecution, registerTeleportOutput, type TeleportExecution, type Tel
 import { createManagedWorktree, preserveHerdrSourceWorkspace, readState, reconcileState, removeManagedWorktree, writeState, type ArrivalPlacement, type Resource } from "./core.ts";
 import { appConnection, assertHerdrContext, getHerdrContext, powershellCommand, powershellQuote, type HerdrContext } from "./herdr.ts";
 import { preflightSession, writeReadiness } from "./readiness.ts";
-import { clearedFolderReport, folderReport, writeFolderReport } from "./folder-report.ts";
+import { clearedFolderReport, folderReport, processToken, writeFolderReport } from "./folder-report.ts";
 import { appPlacement, assertAppHost } from "./app.ts";
 import { StringEnum } from "./string-enum.ts";
 import { UnknownRemoteOutcome, agentDirectory, controllerAnswers, piCommand, type ModelIdentity, confirmArrival, extensionFile, parseTarget, probeRemote, qualifyLocation, remoteMachine, requestController, runtimeFingerprint, shellQuote as quote, startAppSourceCleanup, startRemoteMove, startSessionCleanup, workerFile } from "./remote.ts";
@@ -89,6 +89,8 @@ export default function teleport(pi: ExtensionAPI) {
     process.stdout.write(`PI_TELEPORT_PROBE:${process.env.PI_TELEPORT_PROBE}:${JSON.stringify({ fingerprint: implementation, worker: workerFile, agentDir: agentDirectory(), version: VERSION, command: piCommand(), core: appConnection(), platform: process.platform })}\n`);
   }
   let sessionId = "unknown";
+  let reportGeneration = 0;
+  let reportRetry: NodeJS.Timeout | undefined;
   let dir = dataDir(sessionId);
   const notify = (ctx: ExtensionCommandContext, text: string, level: "info" | "error" = "info") => ctx.ui.notify(text, level);
 
@@ -471,17 +473,36 @@ export default function teleport(pi: ExtensionAPI) {
       return new Text(`${prefix} ${theme.fg("toolOutput", text)}`, 0, 0);
     },
   });
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
     if (process.env.PI_TELEPORT_PREFLIGHT) return;
+    const generation = ++reportGeneration;
+    clearTimeout(reportRetry);
     executions.clear();
     sessionId = ctx.sessionManager.getSessionId();
     dir = dataDir(sessionId);
-    // Every move starts a session in its destination, in this process or a new one.
-    writeFolderReport(ctx.mode, folderReport(ctx.cwd));
+    if (ctx.mode !== "tui" || !process.stdout.isTTY) return;
+    const env = { ...process.env };
+    const token = await processToken(env);
+    if (generation !== reportGeneration) return;
+    writeFolderReport(ctx.mode, folderReport(ctx.cwd, { token }));
+    if (!token && env.HC_TERMINAL_ID && env.HC_TERMINAL_SOCKET && (!env.HC_SOCKET || env.HC_SOCKET === env.HC_TERMINAL_SOCKET)) {
+      const retry = (delay: number) => {
+        reportRetry = setTimeout(async () => {
+          const token = await processToken(env);
+          if (generation !== reportGeneration) return;
+          if (token) writeFolderReport(ctx.mode, folderReport(ctx.cwd, { token }));
+          else retry(Math.min(delay * 2, 30_000));
+        }, delay);
+        reportRetry.unref();
+      };
+      retry(1000);
+    }
   });
   // A replaced session's successor reports its own folder; only an exit clears it,
   // so the shell that may follow is not shown in the agent's folder.
   pi.on("session_shutdown", (event, ctx) => {
+    reportGeneration++;
+    clearTimeout(reportRetry);
     if (event.reason === "quit" && !process.env.PI_TELEPORT_PREFLIGHT) writeFolderReport(ctx.mode, clearedFolderReport);
   });
   // The initial arrival command runs only after Pi has finished every startup hook.
