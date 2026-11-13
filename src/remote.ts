@@ -36,7 +36,7 @@ export type RemoteMove = {
   sessionId: string; sessionText: string; sessionName?: string; state: TeleportState; execution: TeleportExecution;
   sourceCwd: string; sourceSession: string; sourcePid: number; stateDir: string; herdr: HerdrContext;
   fingerprint: string; remoteWorker: string; remoteAgentDir: string; localVersion: string; remoteVersion: string;
-  localCommand?: string[]; remoteCommand?: string[]; remoteCore?: HerdrContext; remotePlatform?: NodeJS.Platform; desktop?: boolean; expectedModel: ModelIdentity;
+  localCommand?: string[]; remoteCommand?: string[]; remoteCore?: HerdrContext; remotePlatform?: NodeJS.Platform; desktop?: boolean; expectedModel: ModelIdentity; sourceBashHidden: boolean;
   placement?: ArrivalPlacement;
 };
 

@@ -47,7 +47,7 @@ function arrival(configure?: (input: Parameters<typeof stageArrival>[0], stateDi
   previous.history.push({ from: "/earlier", to: "/source", at: 1, status: "completed" });
   writeState(stateDir, previous);
   const input: Parameters<typeof stageArrival>[0] = {
-    operationId: randomUUID(), sessionId, expectedModel: { provider: "test", id: "model", thinkingLevel: "off" },
+    operationId: randomUUID(), sessionId, sourcePlatform: "linux", sourceBashHidden: false, expectedModel: { provider: "test", id: "model", thinkingLevel: "off" },
     execution: { sessionId, toolCallId: "move", parentToolCallId: "move" },
     sessionText: JSON.stringify({ type: "session", version: 3, id: sessionId, cwd: "/source" }) + "\n",
     path: cwd, state: previous, connection: { session: "test", workspaceId: "", paneId: "", tabId: "" },
@@ -201,6 +201,11 @@ test("a changed retained source cannot be replaced during return recovery", () =
     input.dormantSource = { operationId, sessionFile: source, cwd: "/source", snapshot: input.sessionText };
   })).toThrow("already has a resumable copy");
   expect(runHerdr).not.toHaveBeenCalled();
+});
+test("arrival transfers the source shell availability to the destination", () => {
+  const { prepared } = arrival((input) => { input.sourcePlatform = "win32"; input.sourceBashHidden = true; });
+  const handoff = JSON.parse(fs.readFileSync(join(prepared.dir, "handoff.json"), "utf8"));
+  expect(handoff).toMatchObject({ sourcePlatform: "win32", sourceBashHidden: true });
 });
 test("arrival receipts preserve the exact leaf and visible root without publishing early", () => {
   const { prepared, stateDir, previous } = arrival((input, stateDir) => {

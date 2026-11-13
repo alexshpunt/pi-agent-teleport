@@ -16,7 +16,7 @@ type Arrival = {
   operationId: string; sessionId: string; sessionText: string; path: string; sessionName?: string;
   state: TeleportState; connection: HerdrContext; callback: Pick<ReturnRoute, "socket" | "token">;
   fingerprint: string; from: string; to: string; execution: TeleportExecution; piCommand?: string[];
-  expectedModel: ModelIdentity;
+  expectedModel: ModelIdentity; sourcePlatform: NodeJS.Platform; sourceBashHidden: boolean;
   dormantSource?: { operationId: string; sessionFile: string; cwd: string; snapshot: string };
   placement?: ArrivalPlacement;
 };
@@ -111,7 +111,7 @@ export function stageArrival(input: Arrival): Prepared {
     state.active = { cwd, sessionFile, herdr: prepared.location };
     state.history.push({ from: input.from, to: input.to, at: Date.now(), status: "completed", toHerdr: prepared.location });
     save(join(dir, "next-state.json"), state);
-    save(join(dir, "handoff.json"), { ...input.callback, ...identity(prepared), commitFile: join(dir, "committed.json"), execution: input.execution, expectedModel: input.expectedModel });
+    save(join(dir, "handoff.json"), { ...input.callback, ...identity(prepared), commitFile: join(dir, "committed.json"), execution: input.execution, expectedModel: input.expectedModel, sourcePlatform: input.sourcePlatform, sourceBashHidden: input.sourceBashHidden });
     const appContext = input.connection.appRoute || input.connection.appSsh ? join(dir, "app-context.json") : "";
     if (appContext) save(appContext, input.connection);
     const command = input.connection.backend === "app" || process.platform === "win32" ? input.piCommand : ["pi"];
@@ -432,6 +432,7 @@ async function controller(config: string): Promise<void> {
           dormantSource: { operationId: move.id, sessionFile: move.sourceSession, cwd: move.sourceCwd, snapshot: move.sessionText },
           from: qualifyLocation(packet.cwd, move.host), to: qualifyLocation(move.sourceCwd, state.machine), execution: packet.execution, expectedModel: packet.expectedModel, piCommand: move.localCommand,
           placement: packet.placement,
+          sourcePlatform: packet.sourcePlatform, sourceBashHidden: packet.sourceBashHidden === true,
         };
         arrival = stageArrival(input);
         await awaitReady(arrival, false);
@@ -590,7 +591,7 @@ async function controller(config: string): Promise<void> {
         : { ...move.remoteCore, ...connection(move.remoteSession), backend: "app" as const, appMachine: move.machine, appRoute: { socket: reservation.socket, token, operationId: move.id } }
       : connection(move.remoteSession);
     outward = await remoteEndpoint<Prepared>(move, "stage", {
-      operationId: move.id, sessionId: move.sessionId, sessionText: move.sessionText, path: move.path, sessionName: move.sessionName,
+      operationId: move.id, sessionId: move.sessionId, sessionText: move.sessionText, path: move.path, sessionName: move.sessionName, sourcePlatform: process.platform, sourceBashHidden: move.sourceBashHidden,
       state, execution: move.execution, expectedModel: move.expectedModel, connection: remoteConnection, piCommand: move.remoteCommand, callback: { socket: reservation.socket, token }, fingerprint: move.fingerprint, from: source, to: target,
       placement: move.placement,
     } satisfies Arrival);
