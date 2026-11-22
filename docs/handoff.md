@@ -65,11 +65,17 @@ its panes or tabs. For remote moves, Teleport checks the caller's live IDs and, 
 Herdr App, verifies that the addressed window contains the source terminal before
 changing its UI. An unreachable or mismatched route stops the move.
 
-Teleport writes the destination launch script into the arrival folder and types only
-a short command that runs it into the new shell. Interactive shells echo typed input
-one character at a time, so a command that carried the whole script took minutes to
-arrive in PowerShell. When the script path contains characters that a shell could
-interpret, the short command is encoded instead.
+Teleport writes the destination launch script into the arrival folder. With Herdr App,
+the new tab starts with that script as its program, and nothing is typed into a shell.
+Herdr App runs it in the destination user's shell: an interactive login shell on Unix,
+PowerShell with `-NoExit` on Windows. The shell loads the user's environment, and the tab
+keeps that shell after Pi exits. The script starts Pi only after Teleport has written the
+arrival's `handoff.json`; it starts nothing if the arrival is rolled back first.
+
+The classic Herdr backend opens a shell and types a short command that runs the script.
+Interactive shells process typed input one key at a time, so a command that carried the
+whole script took minutes to arrive in PowerShell. When the script path contains
+characters that a shell could interpret, the short command is encoded instead.
 
 On native Windows, the launch script is a PowerShell script block that runs the
 current Pi installation directly. This preserves literal Windows paths and handoff
