@@ -1,6 +1,6 @@
 import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -8,14 +8,14 @@ import { fileURLToPath } from "node:url";
 import { mergeMachineResources, prepareHerdrArrival, preserveHerdrSourceWorkspace, readState, writeState, type ArrivalPlacement, type TeleportState } from "./core.ts";
 import { assertHerdrContext, guardedLaunch, launchProgram, readHerdrPane, runCore, runHerdr, shellOwnsForeground, withOutput, type HerdrContext } from "./herdr.ts";
 import type { TeleportExecution } from "./output.ts";
-import { agentDirectory, arrivalGuardFile, requestController, MAX_PACKET, hasSessionProcess, qualifyLocation, relocateSession, runtimeFingerprint, UnknownRemoteOutcome, remoteNodeCommand, waitForForward, sshOptions, validateReady, type ReadyIdentity, type RemoteMove, type ReturnRoute, type ModelIdentity } from "./remote.ts";
+import { agentDirectory, arrivalGuardFile, requestController, MAX_PACKET, hasSessionProcess, qualifyLocation, relocateSession, runtimeFingerprint, runtimeRevision, UnknownRemoteOutcome, remoteNodeCommand, waitForForward, sshOptions, validateReady, type ReadyIdentity, type RemoteMove, type ReturnRoute, type ModelIdentity } from "./remote.ts";
 
 import { runAppProxy } from "./app.ts";
 const implementation = runtimeFingerprint();
 type Arrival = {
   operationId: string; sessionId: string; sessionText: string; path: string; sessionName?: string;
   state: TeleportState; connection: HerdrContext; callback: Pick<ReturnRoute, "socket" | "token">;
-  fingerprint: string; from: string; to: string; execution: TeleportExecution; piCommand?: string[];
+  fingerprint: string; sourceRevision?: string; from: string; to: string; execution: TeleportExecution; piCommand?: string[];
   expectedModel: ModelIdentity; sourcePlatform: NodeJS.Platform; sourceBashHidden: boolean;
   dormantSource?: { operationId: string; sessionFile: string; cwd: string; snapshot: string };
   placement?: ArrivalPlacement;
@@ -79,7 +79,7 @@ export function watchArrival(input: { failure?: () => string | undefined | Promi
 
 /** Stage only owned files and a new native Herdr arrival; do not activate the conversation. */
 export function stageArrival(input: Arrival): Prepared {
-  if (input.fingerprint !== implementation) throw new Error("The installed Teleport changed. Update both endpoints before retrying.");
+  if (input.fingerprint !== implementation) throw new Error(`Teleport differs between the machines: the source runs ${input.sourceRevision || "an unknown revision"}, this machine runs ${runtimeRevision()}. Put both on the same revision, then retry.`);
   if (!/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(input.sessionId) || !/^[a-f0-9-]+$/.test(input.operationId)) throw new Error("Invalid Teleport handoff identity.");
   if (input.execution?.sessionId !== input.sessionId) throw new Error("Teleport execution does not match the transferred session.");
   if (typeof input.expectedModel?.provider !== "string" || !input.expectedModel.provider || typeof input.expectedModel?.id !== "string" || !input.expectedModel.id || !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(input.expectedModel.thinkingLevel)) throw new Error("The source model identity is missing.");
@@ -90,7 +90,7 @@ export function stageArrival(input: Arrival): Prepared {
   const text = relocateSession(input.sessionText, input.sessionId, cwd);
   const stateDir = join(agentDirectory(), "teleport", input.sessionId);
   const old = readState(stateDir);
-  if (old.active && !old.active.cwd.startsWith("ssh://") && existsSync(old.active.sessionFile)) {
+  if (old.active && !old.active.cwd.startsWith("ssh://") && existsSync(old.active.sessionFile) && !retireAbandonedTranscript(stateDir, old.active.sessionFile)) {
     const dormant = input.dormantSource;
     if (!dormant || old.pendingRemote?.id !== dormant.operationId || old.active.sessionFile !== dormant.sessionFile || old.active.cwd !== dormant.cwd || readFileSync(dormant.sessionFile, "utf8") !== dormant.snapshot) {
       throw new Error("This machine already has a resumable copy of the session. Inspect it before retrying the handoff.");
@@ -177,6 +177,28 @@ export async function retireSessionFile(input: SessionCleanup): Promise<void> {
   const stat = lstatSync(input.sessionFile);
   if (!stat.isFile() || stat.dev !== input.dev || stat.ino !== input.ino) throw new Error("The source transcript was replaced; it is retained.");
   rmSync(input.sessionFile);
+}
+/**
+ * Finish a cleanup that gave up waiting for its source Pi: once that process is gone and the
+ * transcript is still the recorded file, nothing can resume it. A live or unknown process, or
+ * a replaced file, keeps the transcript.
+ */
+export function retireAbandonedTranscript(stateDir: string, sessionFile: string): boolean {
+  const cleanups = join(stateDir, "cleanup");
+  if (!existsSync(cleanups)) return false;
+  for (const entry of readdirSync(cleanups)) {
+    let record: SessionCleanup;
+    try { record = JSON.parse(readFileSync(join(cleanups, entry, "session.json"), "utf8")); }
+    catch { continue; } // Other cleanup kinds have no session record.
+    if (record.sessionFile !== sessionFile || !Number.isSafeInteger(record.sourcePid) || record.sourcePid <= 0) continue;
+    try { process.kill(record.sourcePid, 0); return false; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") return false; }
+    const stat = lstatSync(sessionFile);
+    if (!stat.isFile() || stat.dev !== record.dev || stat.ino !== record.ino) return false;
+    rmSync(sessionFile);
+    return true;
+  }
+  return false;
 }
 export type AppSourceCleanup = { context: HerdrContext; sourcePid: number; cwd: string; sessionFile: string; retireRoute?: Pick<ReturnRoute, "socket" | "token" | "operationId"> };
 
@@ -598,7 +620,7 @@ async function controller(config: string): Promise<void> {
       : connection(move.remoteSession);
     outward = await remoteEndpoint<Prepared>(move, "stage", {
       operationId: move.id, sessionId: move.sessionId, sessionText: move.sessionText, path: move.path, sessionName: move.sessionName, sourcePlatform: process.platform, sourceBashHidden: move.sourceBashHidden,
-      state, execution: move.execution, expectedModel: move.expectedModel, connection: remoteConnection, piCommand: move.remoteCommand, callback: { socket: reservation.socket, token }, fingerprint: move.fingerprint, from: source, to: target,
+      state, execution: move.execution, expectedModel: move.expectedModel, connection: remoteConnection, piCommand: move.remoteCommand, callback: { socket: reservation.socket, token }, fingerprint: move.fingerprint, sourceRevision: runtimeRevision(), from: source, to: target,
       placement: move.placement,
     } satisfies Arrival);
     save(join(dirname(config), "destination.json"), outward);
