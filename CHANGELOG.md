@@ -9,6 +9,8 @@
 - Close the Windows source pane after Pi exits, also when PowerShell started Pi and stays behind. Wait up to a minute for the source Pi to exit before cleaning up its pane and transcript.
 - End a move's controller terminal on the source machine once the destination Pi exits or its terminal ends. A later `back` there reports that its return route does not answer, before anything moves.
 - Start the destination Pi of a Herdr App move as the new tab's program instead of typing a launch command into its shell. PowerShell processed the typed command one key at a time, which delayed a move to Windows by minutes; the tab still keeps the user's shell after Pi exits. The classic Herdr backend types only a short command that runs the launch script from the arrival folder.
+- Retire a transcript left behind when a source cleanup gave up waiting for its Pi: once that Pi has exited, the next move to the machine removes it instead of failing with "This machine already has a resumable copy of the session".
+- Name the branch and commit each machine runs when their Teleport installations differ, instead of only asking to update both endpoints.
 
 ## 0.2.11 - 2026-11-09
 
