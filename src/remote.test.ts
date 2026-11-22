@@ -1,13 +1,14 @@
 import { describe, expect, test, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, Socket } from "node:net";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { spawn } from "node:child_process";
 import { fingerprintFiles, revisionMismatch, runtimeRevision, waitForForward, validProbe, remoteNodeCommand, independentProcessEnvironment, confirmArrival, controllerAnswers, hasSessionProcess, parseTarget, qualifyLocation, relocateSession, requestController, UnknownRemoteOutcome, validateReady, waitForReceipt } from "./remote.ts";
 
 test("a Teleport mismatch names the branch and commit each machine runs", () => {
-  const repo = mkdtempSync(join(resolve(".tmp"), "revision-"));
+  const repo = mkdtempSync(join(tmpdir(), "teleport-revision-"));
   try {
     const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
     git("init", "-q", "-b", "develop");
