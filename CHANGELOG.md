@@ -4,7 +4,7 @@
 
 - Create and remove worktrees from Windows Pi in WSL folders using the distribution's Git, without changing global Git configuration.
 - Report the session's folder to the terminal with OSC 7 when a session starts and after every move, and clear it when Pi quits, so Herdr App shows the agent under its current folder, including Pi on Windows. Only the interactive TUI on a terminal writes it.
-- Type only a short command into the destination shell and keep the launch script in the arrival folder. PowerShell echoed the former 3–5 KB encoded command one character at a time, which delayed a move to Windows by minutes.
+- Start the destination Pi of a Herdr App move as the new tab's program instead of typing a launch command into its shell. PowerShell processed the typed command one key at a time, which delayed a move to Windows by minutes; the tab still keeps the user's shell after Pi exits. The classic Herdr backend types only a short command that runs the launch script from the arrival folder.
 
 ## 0.2.11 - 2026-11-09
 
