@@ -79,6 +79,34 @@ test.skipIf(!fishAvailable)("launching through fish preserves nested quotes and 
   expect(JSON.parse(readFileSync(receipt, "utf8")).ok).toBe(false);
 });
 
+test("the typed launch command stays short and carries no session data", () => {
+  // Interactive shells echo typed input one character at a time; the script lives in a file.
+  const directory = mkdtempSync(join(tmpdir(), "teleport-short-"));
+  fixtures.push(directory);
+  const receipt = join(directory, "exited.json");
+  const argv = ["pi", "--session", join(directory, "x".repeat(400), "session.jsonl")];
+  const env = { PI_TELEPORT_HANDOFF: "y".repeat(400) };
+  const windows = guardedLaunch(argv, receipt, env, "win32");
+  expect(windows).toBe(`powershell.exe -NoLogo -NoProfile -Command "& ([ScriptBlock]::Create([IO.File]::ReadAllText('${join(directory, "launch.ps1")}')))"`);
+  expect(readFileSync(join(directory, "launch.ps1"), "utf8")).toContain("y".repeat(400));
+  expect(guardedLaunch(argv, receipt, env, "linux")).toBe(`sh ${join(directory, "launch.sh")}`);
+  expect(readFileSync(join(directory, "launch.sh"), "utf8")).toContain("y".repeat(400));
+});
+
+test.skipIf(!fishAvailable || process.platform === "win32")("fish runs the plain launcher command", () => {
+  const directory = mkdtempSync(join(tmpdir(), "teleport-fish-plain-"));
+  fixtures.push(directory);
+  const fixture = join(directory, "pi.mjs");
+  const output = join(directory, "args.json");
+  const receipt = join(directory, "ready.json");
+  writeFileSync(fixture, `import {writeFileSync} from "node:fs"; writeFileSync(process.argv[2], JSON.stringify(process.argv.slice(3)));`);
+  const command = guardedLaunch([process.execPath, fixture, output, "a'b $c"], receipt, {}, "linux");
+  expect(command).toMatch(/^sh \//);
+  const result = spawnSync("fish", ["-c", command], { encoding: "utf8" });
+  expect(JSON.parse(readFileSync(output, "utf8")), result.stderr).toEqual(["a'b $c"]);
+  expect(JSON.parse(readFileSync(receipt, "utf8")).ok).toBe(false);
+});
+
 test.skipIf(process.platform === "win32")("the Unix launcher preserves argument boundaries and publishes its exit", () => {
   const directory = mkdtempSync(join(tmpdir(), "teleport-unix-'"));
   fixtures.push(directory);
