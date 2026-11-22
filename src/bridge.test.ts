@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -201,6 +202,45 @@ test("a changed retained source cannot be replaced during return recovery", () =
     input.dormantSource = { operationId, sessionFile: source, cwd: "/source", snapshot: input.sessionText };
   })).toThrow("already has a resumable copy");
   expect(runHerdr).not.toHaveBeenCalled();
+});
+/** A retained source whose cleanup gave up waiting for its Pi, which ran as `sourcePid`. */
+function abandonedSource(input: Parameters<typeof stageArrival>[0], stateDir: string, sourcePid: number): string {
+  const source = join(stateDir, "retained-source.jsonl");
+  fs.writeFileSync(source, input.sessionText);
+  const stat = fs.lstatSync(source);
+  const cleanup = join(stateDir, "cleanup", randomUUID());
+  fs.mkdirSync(cleanup, { recursive: true });
+  fs.writeFileSync(join(cleanup, "session.json"), JSON.stringify({ sourcePid, sessionFile: source, dev: stat.dev, ino: stat.ino }));
+  input.state.active = { cwd: "/source", sessionFile: source };
+  writeState(stateDir, input.state);
+  return source;
+}
+
+test("an arrival retires a retained source whose cleanup gave up after its Pi exited", () => {
+  const exited = spawnSync(process.execPath, ["-e", ""]).pid!;
+  let source = "";
+  const { prepared, stateDir } = arrival((input, stateDir) => { source = abandonedSource(input, stateDir, exited); });
+  expect(fs.existsSync(source)).toBe(false);
+  expect(fs.existsSync(prepared.sessionFile)).toBe(true);
+  expect(readState(stateDir).active?.sessionFile).toBe(source);
+});
+
+test("a retained source whose Pi still runs keeps blocking an arrival", () => {
+  let source = "";
+  expect(() => arrival((input, stateDir) => { source = abandonedSource(input, stateDir, process.pid); })).toThrow("already has a resumable copy");
+  expect(fs.existsSync(source)).toBe(true);
+});
+
+test("a retained source replaced after its cleanup gave up keeps blocking an arrival", () => {
+  const exited = spawnSync(process.execPath, ["-e", ""]).pid!;
+  let source = "";
+  expect(() => arrival((input, stateDir) => {
+    source = abandonedSource(input, stateDir, exited);
+    // A new file takes another inode while the recorded one still exists.
+    fs.writeFileSync(`${source}.new`, input.sessionText);
+    fs.renameSync(`${source}.new`, source);
+  })).toThrow("already has a resumable copy");
+  expect(fs.existsSync(source)).toBe(true);
 });
 test("arrival transfers the source shell availability to the destination", () => {
   const { prepared } = arrival((input) => { input.sourcePlatform = "win32"; input.sourceBashHidden = true; });
