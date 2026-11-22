@@ -119,36 +119,41 @@ export function prepareHerdrDestination(context: HerdrContext, target: string, o
   return prepareDestination(context, target, owned, sessionName);
 }
 
-/** Prepare an arrival through a verified connection, without reusing any caller's pane. */
-export function prepareHerdrArrival(context: HerdrContext, target: string, sessionName?: string): PreparedDestination {
-  return prepareDestination(context, target, undefined, sessionName, true);
+/**
+ * Prepare an arrival through a verified connection, without reusing any caller's pane.
+ * With `program`, Herdr App starts it as the new terminal's program instead of a shell.
+ */
+export function prepareHerdrArrival(context: HerdrContext, target: string, sessionName?: string, program?: string[]): PreparedDestination {
+  return prepareDestination(context, target, undefined, sessionName, true, program);
 }
 
 type PreparedDestination = { location: HerdrLocation; rollback: () => void; rollbackArgs: string[] };
 
 /** App has public spaces/tabs, not worktree commands. Git owns checkout operations. */
-function prepareAppDestination(context: HerdrContext, target: string, checkout: boolean, owned: Resource["herdr"] | undefined, label: string, separateWorkspace: boolean): PreparedDestination {
+function prepareAppDestination(context: HerdrContext, target: string, checkout: boolean, owned: Resource["herdr"] | undefined, label: string, separateWorkspace: boolean, program?: string[]): PreparedDestination {
   const spaces = appSpaces(context).filter((space) => !space.machine);
   const space = checkout
     ? spaces.find((space) => space.folder && canonical(space.folder) === canonical(target))
     : separateWorkspace ? undefined : spaces.find((space) => space.id === context.workspaceId);
-  if (space && owned && sameHerdrConnection(context, owned) && space.id === owned.workspaceId && space.tabs.length === 1 && space.tabs[0].id === owned.tabId && space.tabs[0].terminals.length === 1 && space.tabs[0].terminals[0].terminal === owned.paneId && isHerdrShell(context, owned.paneId)) {
+  if (!program && space && owned && sameHerdrConnection(context, owned) && space.id === owned.workspaceId && space.tabs.length === 1 && space.tabs[0].id === owned.tabId && space.tabs[0].terminals.length === 1 && space.tabs[0].terminals[0].terminal === owned.paneId && isHerdrShell(context, owned.paneId)) {
     runHerdr(context, ["tab", "rename", owned.tabId, label]);
     const rollbackArgs = ["tab", "close", owned.tabId];
     return { location: { ...owned }, rollbackArgs, rollback: () => { runHerdr(context, rollbackArgs); } };
   }
+  const start = program ? ["--argv", JSON.stringify(program)] : [];
   const result = space
-    ? runHerdr(context, ["tab", "create", "--workspace", space.id, "--cwd", target, "--label", label, "--no-focus"])
-    : runHerdr(context, ["workspace", "create", "--cwd", target, "--label", label, "--no-focus"]);
+    ? runHerdr(context, ["tab", "create", "--workspace", space.id, "--cwd", target, "--label", label, "--no-focus", ...start])
+    : runHerdr(context, ["workspace", "create", "--cwd", target, "--label", label, "--no-focus", ...start]);
   const location = herdrLocation(context, result);
   const rollbackArgs = space ? ["tab", "close", location.tabId] : ["workspace", "close", location.workspaceId];
   return { location, rollbackArgs, rollback: () => { runHerdr(context, rollbackArgs); } };
 }
-function prepareDestination(context: HerdrContext, target: string, owned?: Resource["herdr"], sessionName?: string, separateWorkspace = false): PreparedDestination {
+function prepareDestination(context: HerdrContext, target: string, owned?: Resource["herdr"], sessionName?: string, separateWorkspace = false, program?: string[]): PreparedDestination {
   const label = sessionName || basename(target) || target;
   let checkout = false;
   try { checkout = canonical(gitOutputPath(target, git(target, ["rev-parse", "--show-toplevel"]))) === canonical(target); } catch { /* Plain directories use the current workspace. */ }
-  if (context.backend === "app") return prepareAppDestination(context, target, checkout, owned, label, separateWorkspace);
+  if (context.backend === "app") return prepareAppDestination(context, target, checkout, owned, label, separateWorkspace, program);
+  if (program) throw new Error("Only Herdr App starts a program in a new terminal.");
   if (checkout) {
     const opened = runHerdr(context, ["worktree", "open", "--cwd", primaryRepo(target), "--path", target, "--no-focus"]);
     const location = herdrLocation(context, opened, target);

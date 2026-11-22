@@ -80,8 +80,8 @@ export function runAppProxy(context: HerdrContext, machine: string, args: string
     return { spaces: result.spaces.filter((space: AppSpace) => space.machine === machine) };
   }
   const allowed: Record<string, string[]> = {
-    "space.new": ["folder", "name", "tab", "machine", "focus"],
-    "tab.new": ["space", "folder", "name", "focus"],
+    "space.new": ["folder", "name", "tab", "machine", "focus", "argv"],
+    "tab.new": ["space", "folder", "name", "focus", "argv"],
     "tab.rename": ["id", "name"],
     "tab.close": ["id", "confirmed"],
     "space.close": ["id", "confirmed"],
@@ -221,8 +221,10 @@ export function runAppOperation(context: HerdrContext, args: string[]): any {
     if (index < 0 || !args[index + 1]) throw new Error(`Missing ${name}.`);
     return args[index + 1];
   };
-  if (kind === "tab" && action === "create") return appCreation(context, createAppItem(context, "tab.new", { space: uiId(context, option("--workspace")), folder: option("--cwd"), name: option("--label") }));
-  if (kind === "workspace" && action === "create") return appCreation(context, createAppItem(context, "space.new", { folder: option("--cwd"), name: option("--label"), tab: option("--label"), machine: context.appMachine || "" }));
+  // `--argv` (JSON) starts that program instead of the machine's shell.
+  const argv = args.includes("--argv") ? { argv: JSON.parse(option("--argv")) as string[] } : {};
+  if (kind === "tab" && action === "create") return appCreation(context, createAppItem(context, "tab.new", { space: uiId(context, option("--workspace")), folder: option("--cwd"), name: option("--label"), ...argv }));
+  if (kind === "workspace" && action === "create") return appCreation(context, createAppItem(context, "space.new", { folder: option("--cwd"), name: option("--label"), tab: option("--label"), machine: context.appMachine || "", ...argv }));
   if ((kind === "tab" || kind === "workspace") && action === "close" && args.length === 3) return runApp(context, ["do", kind === "tab" ? "tab.close" : "space.close", JSON.stringify({ id: uiId(context, args[2]), confirmed: true })]);
   if (kind === "tab" && action === "rename" && args.length === 4) return runApp(context, ["do", "tab.rename", JSON.stringify({ id: uiId(context, args[2]), name: args[3] })]);
   if (kind === "workspace" && action === "get") {
