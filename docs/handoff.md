@@ -102,9 +102,16 @@ source tab's name; a numbered tab name falls back to the session name. A return 
 
 Remote preflight runs the destination's configured `pi` from the target directory.
 The loaded Teleport fingerprint must match the source implementation; checkout line
-endings do not affect the fingerprint. The probe stops after three minutes if Pi has
-not exited. Other packages, settings, provider credentials and repository contents
+endings do not affect the fingerprint. When it does not match, the error names the Git
+branch and commit each machine runs, such as `main@79a28ec` and `develop@03afa40`, and
+whether either checkout has uncommitted changes. The probe stops after three minutes if Pi
+has not exited. Other packages, settings, provider credentials and repository contents
 are not transferred.
+
+A machine refuses an arrival while it holds a resumable copy of the session. A copy whose
+cleanup gave up waiting for its source Pi counts as retired once that Pi has exited and the
+transcript is still the recorded file: the next arrival removes it and continues. A copy
+whose Pi still runs, or a file replaced since, keeps blocking the move.
 
 After a Windows-to-Unix handoff, Teleport enables the destination's default
 `bash` tool when it was hidden on the source and is available on the destination.
