@@ -13,8 +13,8 @@ const call = (id: string, name: string, args: Record<string, unknown>) =>
 const exerciseFiles = `
 text(await tools.search({path: "shared.txt", query: '"target changed"'}));
 text(await tools.diff({before: "shared.txt", after: "ops.txt"}));
-text(await tools.replace({path: "ops.txt", start: "target ops", text: "edited ops"}));
-text(await tools.insert({path: "insert.txt", anchor: "target insert", text: "inserted\\n"}));
+text(await tools.replace({path: "ops.txt", at: "target ops", text: "edited ops"}));
+text(await tools.insert({path: "insert.txt", after: "target insert", text: "inserted\\n"}));
 text(await tools.undo({file: "undo.txt", change: "last"}));
 text(await tools.copy({path: "copy-src.txt", target: "copied.txt"}));
 text(await tools.move({path: "move-src.txt", target: "moved.txt"}));
@@ -49,7 +49,7 @@ test("batched jump and back move relative IDE file operations before the next re
     const result = await new PiIntegrationTest({
       testName: "teleport-relative-cwd", artifactsDir: testArtifactsDir(import.meta.filename), cwd: source,
       extensions: [
-        path.resolve("node_modules/pi-agent-ide/src/pi-agent-ide.ts"), path.resolve("src/index.ts"),
+        path.resolve(process.env.PI_AGENT_IDE_SOURCE ?? "node_modules/pi-agent-ide", "src/pi-agent-ide.ts"), path.resolve("src/index.ts"),
         "builtin:codemode",
       ],
       rawMode: false,
@@ -68,8 +68,8 @@ test("batched jump and back move relative IDE file operations before the next re
         ], { stopReason: "toolUse" }),
         call("target-pwd", "bash", { command: "pwd" }),
         call("target-read", "read", { path: "shared.txt" }),
-        call("target-replace", "replace", { path: "shared.txt", start: "target original", text: "target changed" }),
-        call("undo-prep", "replace", { path: "undo.txt", start: "target undo", text: "temporary edit" }),
+        call("target-replace", "replace", { path: "shared.txt", at: "target original", text: "target changed" }),
+        call("undo-prep", "replace", { path: "undo.txt", at: "target undo", text: "temporary edit" }),
         call("target-files", "codemode", { code: exerciseFiles }),
         assistantMessage([
           toolCall({ id: "back-companion", name: "bash", arguments: { command: "printf complete > back-companion.txt; pwd" } }),
@@ -77,7 +77,7 @@ test("batched jump and back move relative IDE file operations before the next re
         ], { stopReason: "toolUse" }),
         call("source-pwd", "bash", { command: "pwd" }),
         call("returned-read", "read", { path: "shared.txt" }),
-        call("source-replace", "replace", { path: "shared.txt", start: "source original", text: "source changed" }),
+        call("source-replace", "replace", { path: "shared.txt", at: "source original", text: "source changed" }),
         assistantMessage([text("Done")]),
       ],
       timeoutMs: 90_000,
