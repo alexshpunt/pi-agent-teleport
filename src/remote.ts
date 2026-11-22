@@ -77,6 +77,26 @@ export function runtimeFingerprint(): string {
   return fingerprintFiles(["index.ts", "arrival-guard.ts", "core.ts", "herdr.ts", "app.ts", "process-info.ps1", "readiness.ts", "remote.ts", "bridge.ts", "output.ts"].map((name) => ({ name, content: readFileSync(join(sourceDir, name), "utf8") })));
 }
 
+/**
+ * Name the installed Teleport for a person comparing two machines: its Git branch and commit,
+ * such as `develop@03afa40`, and whether its files have uncommitted changes. Only messages use it;
+ * the fingerprint decides compatibility.
+ */
+export function runtimeRevision(dir = sourceDir): string {
+  const git = (args: string[]) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", timeout: 5_000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }).trim();
+  try {
+    const commit = git(["rev-parse", "--short", "HEAD"]);
+    const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]);
+    const changed = git(["status", "--porcelain", "--", "."]) !== "";
+    return `${branch === "HEAD" ? "" : `${branch}@`}${commit}${changed ? " with uncommitted changes" : ""}`;
+  } catch { return "an unknown revision"; }
+}
+
+/** Explain a Teleport mismatch between two machines by the revision each one runs. */
+export function revisionMismatch(host: string, local: string, remote: string | undefined): string {
+  return `Teleport differs between the machines: this machine runs ${local}, ${host} runs ${remote || "an unknown revision"}. Put both on the same revision, then retry. The source is unchanged.`;
+}
+
 /** Preserve every conversation entry and the session ID while relocating its header. */
 export function relocateSession(content: string, sessionId: string, cwd: string): string {
   const lines = content.trimEnd().split("\n");
@@ -240,6 +260,9 @@ child.on('close',code=>{clearTimeout(timer);process.exitCode=code??1});`;
     throw new Error(`Pi could not complete its startup probe on ${host}${cause.killed ? " within three minutes" : ""}. Check Pi and the destination directory; the source is unchanged.`);
   }
   const probes = output.split("\n").filter((line) => line.startsWith(prefix)).map((line) => JSON.parse(line.slice(prefix.length)));
+  if (probes.length === 1 && typeof probes[0]?.fingerprint === "string" && probes[0].fingerprint !== expectedFingerprint) {
+    throw new Error(revisionMismatch(host, runtimeRevision(), typeof probes[0].revision === "string" ? probes[0].revision : undefined));
+  }
   if (probes.length !== 1 || !validProbe(probes[0], expectedFingerprint)) {
     throw new Error(`Install or update Teleport on ${host} to this implementation, then retry. A usable current Teleport is required for the return journey. The source is unchanged.`);
   }

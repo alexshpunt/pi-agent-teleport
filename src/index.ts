@@ -12,7 +12,7 @@ import { preflightSession, writeReadiness } from "./readiness.ts";
 import { clearedFolderReport, folderReport, processToken, writeFolderReport } from "./folder-report.ts";
 import { appPlacement, assertAppHost } from "./app.ts";
 import { StringEnum } from "./string-enum.ts";
-import { UnknownRemoteOutcome, agentDirectory, controllerAnswers, piCommand, type ModelIdentity, confirmArrival, extensionFile, parseTarget, probeRemote, qualifyLocation, remoteMachine, requestController, runtimeFingerprint, shellQuote as quote, startAppSourceCleanup, startRemoteMove, startSessionCleanup, workerFile } from "./remote.ts";
+import { UnknownRemoteOutcome, agentDirectory, controllerAnswers, piCommand, type ModelIdentity, confirmArrival, extensionFile, parseTarget, probeRemote, qualifyLocation, remoteMachine, requestController, runtimeFingerprint, runtimeRevision, shellQuote as quote, startAppSourceCleanup, startRemoteMove, startSessionCleanup, workerFile } from "./remote.ts";
 
 /** Restore the destination's default local shell when the source could not expose it. */
 export function arrivalTools(source: string, destination: string, active: string[], available: Array<{ name: string; exposure?: string }>, settings: NonNullable<Parameters<typeof SettingsManager.inMemory>[0]>, sourceBashHidden = false): string[] {
@@ -86,7 +86,7 @@ export default function teleport(pi: ExtensionAPI) {
   });
   pi.on("tool_execution_end", (event) => { executions.delete(event.toolCallId); });
   if (process.env.PI_TELEPORT_PROBE) {
-    process.stdout.write(`PI_TELEPORT_PROBE:${process.env.PI_TELEPORT_PROBE}:${JSON.stringify({ fingerprint: implementation, worker: workerFile, agentDir: agentDirectory(), version: VERSION, command: piCommand(), core: appConnection(), platform: process.platform })}\n`);
+    process.stdout.write(`PI_TELEPORT_PROBE:${process.env.PI_TELEPORT_PROBE}:${JSON.stringify({ fingerprint: implementation, worker: workerFile, agentDir: agentDirectory(), version: VERSION, revision: runtimeRevision(), command: piCommand(), core: appConnection(), platform: process.platform })}\n`);
   }
   let sessionId = "unknown";
   let reportGeneration = 0;
