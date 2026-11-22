@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mergeMachineResources, prepareHerdrArrival, preserveHerdrSourceWorkspace, readState, writeState, type TeleportState } from "./core.ts";
-import { assertHerdrContext, guardedLaunch, readHerdrPane, runHerdr, shellOwnsForeground, withOutput, type HerdrContext } from "./herdr.ts";
+import { assertHerdrContext, guardedLaunch, launchProgram, readHerdrPane, runHerdr, shellOwnsForeground, withOutput, type HerdrContext } from "./herdr.ts";
 import type { TeleportExecution } from "./output.ts";
 import { agentDirectory, arrivalGuardFile, requestController, MAX_PACKET, hasSessionProcess, qualifyLocation, relocateSession, runtimeFingerprint, UnknownRemoteOutcome, remoteNodeCommand, waitForForward, sshOptions, validateReady, type ReadyIdentity, type RemoteMove, type ReturnRoute, type ModelIdentity } from "./remote.ts";
 
@@ -75,6 +75,8 @@ export function stageArrival(input: Arrival): Prepared {
   if (!/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(input.sessionId) || !/^[a-f0-9-]+$/.test(input.operationId)) throw new Error("Invalid Teleport handoff identity.");
   if (input.execution?.sessionId !== input.sessionId) throw new Error("Teleport execution does not match the transferred session.");
   if (typeof input.expectedModel?.provider !== "string" || !input.expectedModel.provider || typeof input.expectedModel?.id !== "string" || !input.expectedModel.id || !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(input.expectedModel.thinkingLevel)) throw new Error("The source model identity is missing.");
+  const command = input.connection.backend === "app" || process.platform === "win32" ? input.piCommand : ["pi"];
+  if (!command?.length || command.some((arg) => typeof arg !== "string")) throw new Error("The arrival has no verified Pi launch command.");
   const cwd = realpathSync(input.path);
   if (!statSync(cwd).isDirectory()) throw new Error("The Teleport destination is not a directory.");
   const text = relocateSession(input.sessionText, input.sessionId, cwd);
@@ -93,9 +95,16 @@ export function stageArrival(input: Arrival): Prepared {
   save(join(dir, "previous-state.json"), old);
   const sessionFile = join(dir, "session.jsonl");
   writeFileSync(sessionFile, text, { mode: 0o600, flag: "wx" });
+  const handoff = join(dir, "handoff.json");
+  const appContext = input.connection.appRoute || input.connection.appSsh ? join(dir, "app-context.json") : "";
+  const launch = [...command, "--extension", arrivalGuardFile, "--approve", "--session", sessionFile, "/__teleport_arrival"];
+  const launchEnv = { PI_CODING_AGENT_DIR: agentDirectory(), PI_TELEPORT_HANDOFF: handoff, PI_TELEPORT_APP_CONTEXT: appContext };
+  // Herdr App starts Pi as the new terminal's program: typing into a shell is slow (PowerShell
+  // processes pasted text one key at a time). Pi waits for handoff.json, written last below.
+  const program = input.connection.backend === "app" ? launchProgram(launch, join(dir, "exited.json"), launchEnv, handoff) : undefined;
   let destination: ReturnType<typeof prepareHerdrArrival> | undefined;
   try {
-    destination = prepareHerdrArrival(input.connection, cwd, input.sessionName);
+    destination = prepareHerdrArrival(input.connection, cwd, input.sessionName, program);
     const prepared: Prepared = { operationId: input.operationId, sessionId: input.sessionId, dir, stateDir, sessionFile, cwd, agentDir: agentDirectory(), location: destination.location, rollbackArgs: destination.rollbackArgs, fingerprint: input.fingerprint };
     save(join(dir, "prepared.json"), prepared);
     const state = structuredClone(input.state);
@@ -103,12 +112,9 @@ export function stageArrival(input: Arrival): Prepared {
     state.active = { cwd, sessionFile, herdr: prepared.location };
     state.history.push({ from: input.from, to: input.to, at: Date.now(), status: "completed", toHerdr: prepared.location });
     save(join(dir, "next-state.json"), state);
-    save(join(dir, "handoff.json"), { ...input.callback, ...identity(prepared), commitFile: join(dir, "committed.json"), execution: input.execution, expectedModel: input.expectedModel, sourcePlatform: input.sourcePlatform, sourceBashHidden: input.sourceBashHidden });
-    const appContext = input.connection.appRoute || input.connection.appSsh ? join(dir, "app-context.json") : "";
     if (appContext) save(appContext, input.connection);
-    const command = input.connection.backend === "app" || process.platform === "win32" ? input.piCommand : ["pi"];
-    if (!command?.length || command.some((arg) => typeof arg !== "string")) throw new Error("The arrival has no verified Pi launch command.");
-    runHerdr(input.connection, ["pane", "run", prepared.location.paneId, guardedLaunch([...command, "--extension", arrivalGuardFile, "--approve", "--session", sessionFile, "/__teleport_arrival"], join(dir, "exited.json"), { PI_CODING_AGENT_DIR: prepared.agentDir, PI_TELEPORT_HANDOFF: join(dir, "handoff.json"), PI_TELEPORT_APP_CONTEXT: appContext })]);
+    save(handoff, { ...input.callback, ...identity(prepared), commitFile: join(dir, "committed.json"), execution: input.execution, expectedModel: input.expectedModel, sourcePlatform: input.sourcePlatform, sourceBashHidden: input.sourceBashHidden });
+    if (!program) runHerdr(input.connection, ["pane", "run", prepared.location.paneId, guardedLaunch(launch, join(dir, "exited.json"), launchEnv)]);
     return prepared;
   } catch (error) {
     if (!destination) throw new UnknownRemoteOutcome(`Native arrival preparation is unconfirmed. Inspect ${dir} and the destination Herdr state before retrying.`);
