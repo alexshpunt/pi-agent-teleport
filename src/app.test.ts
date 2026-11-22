@@ -58,11 +58,19 @@ test("the authenticated App proxy permits only UI commands addressed to its remo
   expect(runAppProxy(app, "worker", own)).toEqual({ ok: true });
   expect(calls()).toEqual([["herdr-app", own]]);
   vi.mocked(execFileSync).mockClear();
+  // An arrival starts Pi as its tab's program on the requesting machine.
+  const program = ["do", "tab.new", JSON.stringify({ space: "worker/sp3", folder: "/checkout", name: "session", focus: false, argv: ["sh", "-c", "pi"] })];
+  expect(runAppProxy(app, "worker", program)).toEqual({ ok: true });
+  expect(calls()).toEqual([["herdr-app", program]]);
+  vi.mocked(execFileSync).mockClear();
   for (const args of [
     ["do", "tab.rename", JSON.stringify({ id: "tb4", name: "session" })],
     ["do", "tab.close", JSON.stringify({ id: "other/tb4", confirmed: true })],
     ["do", "space.new", JSON.stringify({ machine: "", folder: "/checkout" })],
-    ["do", "tab.new", JSON.stringify({ space: "worker/sp3", argv: ["foreign-command"] })],
+    // A program runs on the space's machine: only the requesting machine's own spaces.
+    ["do", "tab.new", JSON.stringify({ space: "other/sp3", argv: ["foreign-command"] })],
+    ["do", "space.new", JSON.stringify({ machine: "", folder: "/checkout", argv: ["foreign-command"] })],
+    ["do", "tab.new", JSON.stringify({ space: "worker/sp3", task: "typed text" })],
     ["do", "terminal.kill", JSON.stringify({ terminal: "worker/t7" })],
   ]) expect(() => runAppProxy(app, "worker", args)).toThrow();
   expect(execFileSync).not.toHaveBeenCalled();
@@ -74,6 +82,14 @@ test("a remote App tab uses its machine-qualified UI handles and returns native 
   expect(result.root_pane).toEqual({ pane_id: "t8", tab_id: "tb5", workspace_id: "sp3" });
   const [, args] = calls()[0];
   expect(JSON.parse((args as string[])[2])).toEqual({ space: "worker/sp3", folder: "/checkout", name: "my session", focus: false });
+});
+
+test("an App tab created with a program starts it instead of the machine's shell", () => {
+  vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ space: "worker/sp3", tab: "worker/tb5", terminal: "worker/t8" }));
+  const program = ["powershell.exe", "-EncodedCommand", "AAAA"];
+  runHerdr({ ...app, appMachine: "worker" }, [...create, "--argv", JSON.stringify(program)]);
+  const [, args] = calls()[0];
+  expect(JSON.parse((args as string[])[2])).toEqual({ space: "worker/sp3", folder: "/checkout", name: "my session", focus: false, argv: program });
 });
 
 test("a remote App workspace is created on its configured machine, never the desktop", () => {

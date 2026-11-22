@@ -1,9 +1,9 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { guardedLaunch } from "./herdr.ts";
+import { guardedLaunch, launchProgram } from "./herdr.ts";
 import { buildSourcePaneCleanup } from "./index.ts";
 
 const fixtures: string[] = [];
@@ -106,6 +106,61 @@ test.skipIf(!fishAvailable || process.platform === "win32")("fish runs the plain
   expect(JSON.parse(readFileSync(output, "utf8")), result.stderr).toEqual(["a'b $c"]);
   expect(JSON.parse(readFileSync(receipt, "utf8")).ok).toBe(false);
 });
+
+/** Run a terminal program the way Herdr App starts it: an argv vector, not a typed line. */
+function runProgram(argv: string[], meanwhile?: () => void): Promise<{ code: number | null; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(argv[0], argv.slice(1), { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("close", (code) => resolve({ code, stderr }));
+    meanwhile?.();
+  });
+}
+
+test.skipIf(process.platform === "win32")("a Unix terminal program waits for the handoff before it starts Pi", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "teleport-program-"));
+  fixtures.push(directory);
+  const fixture = join(directory, "pi.mjs");
+  const output = join(directory, "args.json");
+  const receipt = join(directory, "exited.json");
+  const gate = join(directory, "handoff.json");
+  writeFileSync(fixture, `import {existsSync, writeFileSync} from "node:fs"; writeFileSync(process.argv[2], JSON.stringify({argv: process.argv.slice(3), gate: existsSync(${JSON.stringify(gate)}), handoff: process.env.PI_TELEPORT_HANDOFF}));`);
+  const argv = launchProgram([process.execPath, fixture, output, "a'b $c"], receipt, { PI_TELEPORT_HANDOFF: gate }, gate, "linux");
+  expect(argv).toEqual(["sh", join(directory, "launch.sh")]);
+  const result = await runProgram(argv, () => setTimeout(() => writeFileSync(gate, "{}"), 500));
+  expect(JSON.parse(readFileSync(output, "utf8")), result.stderr).toEqual({ argv: ["a'b $c"], gate: true, handoff: gate });
+  expect(JSON.parse(readFileSync(receipt, "utf8")).ok).toBe(false);
+});
+
+test.skipIf(process.platform === "win32")("a Unix terminal program does not start Pi for a rolled-back arrival", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "teleport-rollback-"));
+  fixtures.push(parent);
+  const directory = join(parent, "arrival");
+  mkdirSync(directory);
+  const output = join(parent, "started");
+  const argv = launchProgram(["touch", output], join(directory, "exited.json"), {}, join(directory, "handoff.json"), "linux");
+  const result = await runProgram(argv, () => setTimeout(() => rmSync(directory, { recursive: true, force: true }), 300));
+  expect(result.code).toBe(1);
+  expect(existsSync(output)).toBe(false);
+});
+
+test.skipIf(!available)("a Windows terminal program runs Pi from the launch script once the handoff exists", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "teleport program ' & $ [] "));
+  fixtures.push(directory);
+  const fixture = join(directory, "pi fixture.mjs");
+  const output = join(directory, "arguments.json");
+  const receipt = join(directory, "exited.json");
+  const gate = join(directory, "handoff.json");
+  const session = String.raw`C:\Users\O'Brien $user\work & [draft]\Вход session.jsonl`;
+  writeFileSync(fixture, `import {writeFileSync} from "node:fs"; writeFileSync(process.argv[2], JSON.stringify({argv: process.argv.slice(3), handoff: process.env.PI_TELEPORT_HANDOFF}));`);
+  const argv = launchProgram([process.execPath, fixture, output, "--session", session], receipt, { PI_TELEPORT_HANDOFF: gate }, gate, "win32");
+  expect(argv.slice(0, 4)).toEqual(["powershell.exe", "-NoLogo", "-NoProfile", "-EncodedCommand"]);
+  // pwsh stands in for powershell.exe off Windows.
+  const result = await runProgram([powershell, ...argv.slice(1)], () => setTimeout(() => writeFileSync(gate, "{}"), 500));
+  expect(JSON.parse(readFileSync(output, "utf8")), result.stderr).toEqual({ argv: ["--session", session], handoff: gate });
+  expect(JSON.parse(readFileSync(receipt, "utf8")).ok).toBe(false);
+}, 60_000);
 
 test.skipIf(process.platform === "win32")("the Unix launcher preserves argument boundaries and publishes its exit", () => {
   const directory = mkdtempSync(join(tmpdir(), "teleport-unix-'"));
