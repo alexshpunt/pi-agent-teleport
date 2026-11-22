@@ -65,10 +65,17 @@ its panes or tabs. For remote moves, Teleport checks the caller's live IDs and, 
 Herdr App, verifies that the addressed window contains the source terminal before
 changing its UI. An unreachable or mismatched route stops the move.
 
-On native Windows, Teleport sends an encoded PowerShell launch script and runs the
+Teleport writes the destination launch script into the arrival folder and types only
+a short command that runs it into the new shell. Interactive shells echo typed input
+one character at a time, so a command that carried the whole script took minutes to
+arrive in PowerShell. When the script path contains characters that a shell could
+interpret, the short command is encoded instead.
+
+On native Windows, the launch script is a PowerShell script block that runs the
 current Pi installation directly. This preserves literal Windows paths and handoff
-environment values, and lets Herdr observe Pi's own readiness PID instead of an npm
-wrapper. Windows handoffs do not require a POSIX shell.
+environment values, does not depend on the execution policy, and lets Herdr observe
+Pi's own readiness PID instead of an npm wrapper. Windows handoffs do not require a
+POSIX shell.
 
 For remote handoffs, if the source is the last pane in a primary-checkout workspace,
 Teleport first creates a shell tab there with `--no-focus`. Linked-worktree and

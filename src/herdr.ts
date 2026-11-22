@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -13,12 +13,22 @@ export function powershellCommand(script: string): string {
 
 export function powershellQuote(value: string): string { return `'${value.replaceAll("'", "''")}'`; }
 
-/** Publish a launch exit even when Pi dies before the first process observation. */
+/** Paths that every receiving shell (cmd, PowerShell, POSIX sh, fish) passes through literally. */
+const PLAIN_WINDOWS_PATH = /^[A-Za-z0-9 :\\/._-]+$/;
+const PLAIN_POSIX_PATH = /^[A-Za-z0-9/._-]+$/;
+
+/**
+ * Publish a launch exit even when Pi dies before the first process observation.
+ * The launch script is written next to the receipt, and the returned command only runs it:
+ * an interactive shell such as PowerShell with PSReadLine echoes typed input character by
+ * character, so a command that carries the whole script takes many seconds to arrive.
+ */
 export function guardedLaunch(argv: string[], receipt: string, env: Record<string, string> = {}, platform: NodeJS.Platform = process.platform): string {
   const temporary = `${receipt}.exit.tmp`;
   if (platform === "win32") {
     const quote = powershellQuote;
-    return powershellCommand([
+    const launcher = join(dirname(receipt), "launch.ps1");
+    writeFileSync(launcher, [
       "$ErrorActionPreference = 'Stop'",
       ...Object.entries(env).map(([name, value]) => `[Environment]::SetEnvironmentVariable(${quote(name)}, ${quote(value)}, 'Process')`),
       "$status = 1",
@@ -28,13 +38,18 @@ export function guardedLaunch(argv: string[], receipt: string, env: Record<strin
       `  [IO.File]::WriteAllText(${quote(temporary)}, $json, (New-Object Text.UTF8Encoding $false))`,
       `  Move-Item -LiteralPath ${quote(temporary)} -Destination ${quote(receipt)} -Force`,
       "}",
-    ].join("\n"));
+    ].join("\n"), { mode: 0o600 });
+    // A script block, unlike -File, does not depend on the execution policy.
+    const bootstrap = `& ([ScriptBlock]::Create([IO.File]::ReadAllText(${quote(launcher)})))`;
+    return PLAIN_WINDOWS_PATH.test(launcher) ? `powershell.exe -NoLogo -NoProfile -Command "${bootstrap}"` : powershellCommand(bootstrap);
   }
+  const launcher = join(dirname(receipt), "launch.sh");
   const command = [...Object.entries(env).map(([name, value]) => `${name}=${shellQuote(value)}`), ...argv.map(shellQuote)].join(" ");
-  const script = `${command}; status=$?; if [ -d ${shellQuote(dirname(receipt))} ]; then printf '{"ok":false,"error":"Destination Pi exited (status %s)."}\\n' "$status" > ${shellQuote(temporary)} && mv ${shellQuote(temporary)} ${shellQuote(receipt)}; fi`;
+  writeFileSync(launcher, `${command}; status=$?; if [ -d ${shellQuote(dirname(receipt))} ]; then printf '{"ok":false,"error":"Destination Pi exited (status %s)."}\\n' "$status" > ${shellQuote(temporary)} && mv ${shellQuote(temporary)} ${shellQuote(receipt)}; fi\n`, { mode: 0o600 });
+  if (PLAIN_POSIX_PATH.test(launcher)) return `sh ${launcher}`;
   // The receiving login shell may be fish: nested POSIX quote escapes differ.
   // Octal passes only inert ASCII through it; POSIX sh decodes its own script.
-  const encoded = [...Buffer.from(script)].map((byte) => `\\0${byte.toString(8).padStart(3, "0")}`).join("");
+  const encoded = [...Buffer.from(`exec sh ${shellQuote(launcher)}`)].map((byte) => `\\0${byte.toString(8).padStart(3, "0")}`).join("");
   return `sh -c 'eval "$(printf %b "${encoded}")"'`;
 }
 

@@ -8,6 +8,7 @@
 - Open a remote arrival from Herdr App in the destination machine's space named like the source space, created when missing, in a tab named like the source tab, instead of a space chosen by folder or named after the session.
 - Close the Windows source pane after Pi exits, also when PowerShell started Pi and stays behind. Wait up to a minute for the source Pi to exit before cleaning up its pane and transcript.
 - End a move's controller terminal on the source machine once the destination Pi exits or its terminal ends. A later `back` there reports that its return route does not answer, before anything moves.
+- Type only a short command into the destination shell and keep the launch script in the arrival folder. PowerShell echoed the former 3–5 KB encoded command one character at a time, which delayed a move to Windows by minutes.
 
 ## 0.2.11 - 2026-11-09
 
