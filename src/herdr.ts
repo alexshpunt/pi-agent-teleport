@@ -18,18 +18,19 @@ const PLAIN_WINDOWS_PATH = /^[A-Za-z0-9 :\\/._-]+$/;
 const PLAIN_POSIX_PATH = /^[A-Za-z0-9/._-]+$/;
 
 /**
- * Publish a launch exit even when Pi dies before the first process observation.
- * The launch script is written next to the receipt, and the returned command only runs it:
- * an interactive shell such as PowerShell with PSReadLine echoes typed input character by
- * character, so a command that carries the whole script takes many seconds to arrive.
+ * Write the launch script next to the receipt. It publishes a launch exit even when Pi dies
+ * before the first process observation. With `gate`, it starts Pi only once that file exists,
+ * and gives up when the folder holding it disappears (a rolled-back arrival).
  */
-export function guardedLaunch(argv: string[], receipt: string, env: Record<string, string> = {}, platform: NodeJS.Platform = process.platform): string {
+function writeLauncher(argv: string[], receipt: string, env: Record<string, string>, platform: NodeJS.Platform, gate?: string): string {
   const temporary = `${receipt}.exit.tmp`;
   if (platform === "win32") {
     const quote = powershellQuote;
     const launcher = join(dirname(receipt), "launch.ps1");
     writeFileSync(launcher, [
       "$ErrorActionPreference = 'Stop'",
+      // A rolled-back arrival removed the folder: start nothing.
+      ...(gate ? [`while (-not [IO.File]::Exists(${quote(gate)})) { if (-not [IO.Directory]::Exists(${quote(dirname(gate))})) { return }; Start-Sleep -Milliseconds 100 }`] : []),
       ...Object.entries(env).map(([name, value]) => `[Environment]::SetEnvironmentVariable(${quote(name)}, ${quote(value)}, 'Process')`),
       "$status = 1",
       `try { $global:LASTEXITCODE = 0; & ${argv.map(quote).join(" ")}; $status = $LASTEXITCODE } catch { [Console]::Error.WriteLine($_.ToString()) }`,
@@ -39,18 +40,49 @@ export function guardedLaunch(argv: string[], receipt: string, env: Record<strin
       `  Move-Item -LiteralPath ${quote(temporary)} -Destination ${quote(receipt)} -Force`,
       "}",
     ].join("\n"), { mode: 0o600 });
-    // A script block, unlike -File, does not depend on the execution policy.
-    const bootstrap = `& ([ScriptBlock]::Create([IO.File]::ReadAllText(${quote(launcher)})))`;
-    return PLAIN_WINDOWS_PATH.test(launcher) ? `powershell.exe -NoLogo -NoProfile -Command "${bootstrap}"` : powershellCommand(bootstrap);
+    return launcher;
   }
   const launcher = join(dirname(receipt), "launch.sh");
+  const wait = gate ? `while [ ! -e ${shellQuote(gate)} ]; do [ -d ${shellQuote(dirname(gate))} ] || exit 1; sleep 0.1; done\n` : "";
   const command = [...Object.entries(env).map(([name, value]) => `${name}=${shellQuote(value)}`), ...argv.map(shellQuote)].join(" ");
-  writeFileSync(launcher, `${command}; status=$?; if [ -d ${shellQuote(dirname(receipt))} ]; then printf '{"ok":false,"error":"Destination Pi exited (status %s)."}\\n' "$status" > ${shellQuote(temporary)} && mv ${shellQuote(temporary)} ${shellQuote(receipt)}; fi\n`, { mode: 0o600 });
+  writeFileSync(launcher, `${wait}${command}; status=$?; if [ -d ${shellQuote(dirname(receipt))} ]; then printf '{"ok":false,"error":"Destination Pi exited (status %s)."}\\n' "$status" > ${shellQuote(temporary)} && mv ${shellQuote(temporary)} ${shellQuote(receipt)}; fi\n`, { mode: 0o600 });
+  return launcher;
+}
+
+/** A script block, unlike -File, does not depend on the execution policy. */
+function powershellBootstrap(launcher: string): string {
+  return `& ([ScriptBlock]::Create([IO.File]::ReadAllText(${powershellQuote(launcher)})))`;
+}
+
+/**
+ * The command to type into an existing shell to run the launch script. It stays short:
+ * an interactive shell such as PowerShell with PSReadLine processes typed input one key
+ * at a time, so a command that carries the whole script takes minutes to arrive.
+ */
+export function guardedLaunch(argv: string[], receipt: string, env: Record<string, string> = {}, platform: NodeJS.Platform = process.platform): string {
+  return typedLauncher(writeLauncher(argv, receipt, env, platform), platform);
+}
+function typedLauncher(launcher: string, platform: NodeJS.Platform): string {
+  if (platform === "win32") {
+    const bootstrap = powershellBootstrap(launcher);
+    return PLAIN_WINDOWS_PATH.test(launcher) ? `powershell.exe -NoLogo -NoProfile -Command "${bootstrap}"` : powershellCommand(bootstrap);
+  }
   if (PLAIN_POSIX_PATH.test(launcher)) return `sh ${launcher}`;
   // The receiving login shell may be fish: nested POSIX quote escapes differ.
   // Octal passes only inert ASCII through it; POSIX sh decodes its own script.
   const encoded = [...Buffer.from(`exec sh ${shellQuote(launcher)}`)].map((byte) => `\\0${byte.toString(8).padStart(3, "0")}`).join("");
   return `sh -c 'eval "$(printf %b "${encoded}")"'`;
+}
+
+/**
+ * The program of a new Herdr App terminal that runs the launch script, so nothing is typed
+ * into a shell. Herdr App runs it in the user's shell (an interactive login shell on Unix,
+ * `-NoExit` PowerShell on Windows), which loads the user's environment and stays after Pi exits.
+ */
+export function launchProgram(argv: string[], receipt: string, env: Record<string, string>, gate: string, platform: NodeJS.Platform = process.platform): string[] {
+  const launcher = writeLauncher(argv, receipt, env, platform, gate);
+  if (platform === "win32") return ["powershell.exe", "-NoLogo", "-NoProfile", "-EncodedCommand", Buffer.from(powershellBootstrap(launcher), "utf16le").toString("base64")];
+  return ["sh", launcher];
 }
 
 /** Caller IDs and the CLI connection that owns them. */
@@ -207,7 +239,10 @@ function coreProcessInfo(context: HerdrContext, paneId: string): any {
       } catch { /* A process can exit while /proc is being read. */ }
     }
   }
-  return { shell_pid: terminal.pid, foreground_process_group_id: group, foreground_processes: processes };
+  // A launcher that runs Pi without job control shares its group with Pi: the shell owns the
+  // foreground only when nothing else is in its group.
+  const alone = group === terminal.pid && processes.every((item) => item.pid === terminal.pid);
+  return { shell_pid: terminal.pid, shell_owns_foreground: alone, foreground_process_group_id: group, foreground_processes: processes };
 }
 /** True only when the shell, rather than a command or agent, owns the foreground. */
 export function isHerdrShell(context: HerdrContext, paneId: string): boolean {
