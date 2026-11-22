@@ -2,7 +2,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, writ
 import { join, resolve } from "node:path";
 import { createServer } from "node:net";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { retireAppSource, retireSessionFile } from "./bridge.ts";
+import { retireAppSource, retireSessionFile, SOURCE_EXIT_LIMIT_MS } from "./bridge.ts";
 import { retireDesktopSource } from "./bridge.ts";
 import { preserveHerdrSourceWorkspace } from "./core.ts";
 import { assertHerdrContext, runHerdr } from "./herdr.ts";
@@ -72,7 +72,7 @@ test("a committed source transcript is retained while its process remains alive"
   vi.mocked(process.kill).mockReturnValue(true);
   const stat = lstatSync(sessionFile);
   const outcome = retireSessionFile({ sourcePid: 42, sessionFile, dev: stat.dev, ino: stat.ino }).then(() => false, () => true);
-  await vi.advanceTimersByTimeAsync(5_100);
+  await vi.advanceTimersByTimeAsync(SOURCE_EXIT_LIMIT_MS + 100);
   expect(await outcome).toBe(true);
   expect(existsSync(sessionFile)).toBe(true);
   vi.useRealTimers();
@@ -119,4 +119,58 @@ test("App retirement can close an idle shell only after its source process has e
   await cleanup();
   expect(vi.mocked(runHerdr).mock.calls.at(-1)?.[1]).toEqual(["pane", "close", "t1"]);
   expect(existsSync(sessionFile)).toBe(true);
+});
+
+test("a Windows source launched as pwsh -NoExit is closed once Pi exits and only its shell remains", async () => {
+  vi.useFakeTimers();
+  let alive = true;
+  vi.mocked(process.kill).mockImplementation(() => { if (alive) return true; throw Object.assign(new Error("gone"), { code: "ESRCH" }); });
+  // While Pi shuts down, Windows observation of its busy descendants is unknown: no occupants, shell not idle.
+  vi.mocked(runHerdr).mockImplementation((_context, args) => args[1] === "close"
+    ? { type: "ok" }
+    : { process_info: alive
+      ? { shell_pid: 10, shell_owns_foreground: false, foreground_processes: [] }
+      : { shell_pid: 10, shell_owns_foreground: true, foreground_processes: [{ pid: 10, cwd: "/source", argv: ["pwsh.exe", "-NoExit", "-Command", "pi"] }] } });
+  const outcome = cleanup().then(() => "closed", (error) => String(error));
+  await vi.advanceTimersByTimeAsync(3_000);
+  alive = false;
+  await vi.advanceTimersByTimeAsync(200);
+  expect(await outcome).toBe("closed");
+  expect(vi.mocked(runHerdr).mock.calls.at(-1)?.[1]).toEqual(["pane", "close", "t1"]);
+  vi.useRealTimers();
+});
+
+test("an unverifiable pane is left unchanged while the source keeps running", async () => {
+  vi.useFakeTimers();
+  vi.mocked(process.kill).mockReturnValue(true);
+  observe(40, []);
+  const outcome = cleanup().then(() => "closed", (error) => String(error));
+  await vi.advanceTimersByTimeAsync(SOURCE_EXIT_LIMIT_MS + 100);
+  expect(await outcome).toMatch(/left unchanged/);
+  expect(vi.mocked(runHerdr).mock.calls.every(([, args]) => args[1] !== "close")).toBe(true);
+  vi.useRealTimers();
+});
+
+test("a source whose program exit already closed its pane needs no pane cleanup", async () => {
+  vi.mocked(assertHerdrContext).mockImplementation(() => { throw new Error("terminal finished"); });
+  await cleanup();
+  expect(runHerdr).not.toHaveBeenCalled();
+});
+
+test("a pane that cannot be observed while Pi shuts down is closed once only its shell remains", async () => {
+  vi.useFakeTimers();
+  let alive = true;
+  vi.mocked(process.kill).mockImplementation(() => { if (alive) return true; throw Object.assign(new Error("gone"), { code: "ESRCH" }); });
+  vi.mocked(runHerdr).mockImplementation((_context, args) => {
+    if (args[1] === "close") return { type: "ok" };
+    if (alive) throw new Error("process observation failed");
+    return { process_info: { shell_pid: 10, shell_owns_foreground: true, foreground_processes: [{ pid: 10, cwd: "/source", argv: ["pwsh.exe", "-NoExit", "-Command", "pi"] }] } };
+  });
+  const outcome = cleanup().then(() => "closed", (error) => String(error));
+  await vi.advanceTimersByTimeAsync(3_000);
+  alive = false;
+  await vi.advanceTimersByTimeAsync(200);
+  expect(await outcome).toBe("closed");
+  expect(vi.mocked(runHerdr).mock.calls.at(-1)?.[1]).toEqual(["pane", "close", "t1"]);
+  vi.useRealTimers();
 });

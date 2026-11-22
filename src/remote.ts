@@ -5,7 +5,7 @@ import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, posix, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { TeleportState } from "./core.ts";
+import type { ArrivalPlacement, TeleportState } from "./core.ts";
 import { runCore, type HerdrContext } from "./herdr.ts";
 import type { TeleportExecution } from "./output.ts";
 import { discoverAppDesktop } from "./app.ts";
@@ -37,14 +37,20 @@ export type RemoteMove = {
   sourceCwd: string; sourceSession: string; sourcePid: number; stateDir: string; herdr: HerdrContext;
   fingerprint: string; remoteWorker: string; remoteAgentDir: string; localVersion: string; remoteVersion: string;
   localCommand?: string[]; remoteCommand?: string[]; remoteCore?: HerdrContext; remotePlatform?: NodeJS.Platform; desktop?: boolean; expectedModel: ModelIdentity; sourceBashHidden: boolean;
+  placement?: ArrivalPlacement;
 };
+
+/** An OpenSSH alias, optionally with a user: the only host form Teleport accepts. */
+const SSH_HOST = "(?:[A-Za-z0-9][A-Za-z0-9_.-]*@)?[A-Za-z0-9][A-Za-z0-9_.-]*";
+const sshAlias = new RegExp(`^${SSH_HOST}$`);
+const sshTarget = new RegExp(`^ssh://(${SSH_HOST})(/.*)$`);
 
 /** Resolve local paths or a trusted OpenSSH alias with an absolute remote path. */
 export function parseTarget(value: string, cwd: string, currentMachine?: string): { host?: string; path: string } {
   if (/[\x00-\x1f\x7f]/.test(value)) throw new Error("Teleport destinations cannot contain control characters.");
   if (!value.includes("://")) return { path: resolve(cwd, value) };
-  const match = /^ssh:\/\/((?:[A-Za-z0-9][A-Za-z0-9_.-]*@)?[A-Za-z0-9][A-Za-z0-9_.-]*)(\/.*)$/.exec(value);
-  if (!match || match[2] === "/") throw new Error("Use ssh://SSH_ALIAS/absolute/directory. Put ports and connection options in OpenSSH config.");
+  const match = sshTarget.exec(value);
+  if (!match || match[2] === "/") throw new Error("Use ssh://MACHINE/absolute/directory with the SSH target of a saved Herdr machine or, in Herdr App, its name from hc machine ls. Put ports and connection options in OpenSSH config.");
   const path = /^\/[A-Za-z]:\//.test(match[2]) ? win32.normalize(match[2].slice(1)).replaceAll("\\", "/") : posix.resolve("/", match[2]);
   return match[1] === currentMachine ? { path } : { host: match[1], path };
 }
@@ -69,6 +75,26 @@ export function fingerprintFiles(files: Array<{ name: string; content: string }>
 /** Fingerprint executable Teleport files, not Pi or unrelated extensions. */
 export function runtimeFingerprint(): string {
   return fingerprintFiles(["index.ts", "arrival-guard.ts", "core.ts", "herdr.ts", "app.ts", "process-info.ps1", "readiness.ts", "remote.ts", "bridge.ts", "output.ts"].map((name) => ({ name, content: readFileSync(join(sourceDir, name), "utf8") })));
+}
+
+/**
+ * Name the installed Teleport for a person comparing two machines: its Git branch and commit,
+ * such as `develop@03afa40`, and whether its files have uncommitted changes. Only messages use it;
+ * the fingerprint decides compatibility.
+ */
+export function runtimeRevision(dir = sourceDir): string {
+  const git = (args: string[]) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", timeout: 5_000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }).trim();
+  try {
+    const commit = git(["rev-parse", "--short", "HEAD"]);
+    const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]);
+    const changed = git(["status", "--porcelain", "--", "."]) !== "";
+    return `${branch === "HEAD" ? "" : `${branch}@`}${commit}${changed ? " with uncommitted changes" : ""}`;
+  } catch { return "an unknown revision"; }
+}
+
+/** Explain a Teleport mismatch between two machines by the revision each one runs. */
+export function revisionMismatch(host: string, local: string, remote: string | undefined): string {
+  return `Teleport differs between the machines: this machine runs ${local}, ${host} runs ${remote || "an unknown revision"}. Put both on the same revision, then retry. The source is unchanged.`;
 }
 
 /** Preserve every conversation entry and the session ID while relocating its header. */
@@ -125,6 +151,16 @@ export function requestController(route: Pick<ReturnRoute, "socket" | "token">, 
     socket.on("error", (error) => reject(submitted ? new UnknownRemoteOutcome(`Teleport callback outcome is unconfirmed: ${error.message}. Keep this source idle and inspect the destination.`) : error));
     socket.on("end", () => { if (!content.includes("\n")) reject(new UnknownRemoteOutcome("Teleport return channel disconnected after submission. Keep this source idle and inspect the destination.")); });
   });
+}
+
+/**
+ * Whether a controller still answers on this route. The probe changes nothing, so a failed probe is
+ * conclusive. A closed forward can accept and then reset a loopback connection (WSL), which a real
+ * request could not tell from a lost reply. Any reply counts, including an older controller's refusal.
+ */
+export async function controllerAnswers(route: Pick<ReturnRoute, "socket" | "token">): Promise<boolean> {
+  try { await requestController(route, { action: "probe" }); return true; }
+  catch (error) { return !(error instanceof UnknownRemoteOutcome) && typeof (error as NodeJS.ErrnoException).code !== "string"; }
 }
 
 /** Release an arrival only after its source publishes a durable commit, even if the readiness acknowledgement was lost. */
@@ -224,6 +260,9 @@ child.on('close',code=>{clearTimeout(timer);process.exitCode=code??1});`;
     throw new Error(`Pi could not complete its startup probe on ${host}${cause.killed ? " within three minutes" : ""}. Check Pi and the destination directory; the source is unchanged.`);
   }
   const probes = output.split("\n").filter((line) => line.startsWith(prefix)).map((line) => JSON.parse(line.slice(prefix.length)));
+  if (probes.length === 1 && typeof probes[0]?.fingerprint === "string" && probes[0].fingerprint !== expectedFingerprint) {
+    throw new Error(revisionMismatch(host, runtimeRevision(), typeof probes[0].revision === "string" ? probes[0].revision : undefined));
+  }
   if (probes.length !== 1 || !validProbe(probes[0], expectedFingerprint)) {
     throw new Error(`Install or update Teleport on ${host} to this implementation, then retry. A usable current Teleport is required for the return journey. The source is unchanged.`);
   }
@@ -231,22 +270,46 @@ child.on('close',code=>{clearTimeout(timer);process.exitCode=code??1});`;
 }
 
 /** Resolve one configured SSH profile without using UI focus. */
-export function remoteMachine(host: string, context?: HerdrContext): { machine: string; remoteSession: string; desktop?: boolean; sourceContext?: HerdrContext } {
+export function remoteMachine(host: string, context?: HerdrContext): { machine: string; remoteSession: string; target?: string; desktop?: boolean; sourceContext?: HerdrContext } {
   if (context?.backend === "app") {
     const profiles = runCore(context, ["machine", "ls", "--json"]).machines;
     if (!Array.isArray(profiles)) throw new Error("Core returned no machine profiles.");
-    const matches = profiles.filter((profile: any) => profile.target === host && !profile.via && !profile.temporary);
+    const direct = profiles.filter((profile: any) => !profile.via && !profile.temporary);
+    let matches = direct.filter((profile: any) => profile.target === host);
+    // Agents see Herdr machine names (`hc machine ls`, `laptop-wsl/t7`), not SSH aliases. Accept a name as its saved target.
+    let target = host;
     if (matches.length === 0) {
-      const sourceContext = discoverAppDesktop(context, host);
+      const named = direct.filter((profile: any) => profile.name === host && typeof profile.target === "string" && sshAlias.test(profile.target));
+      if (named.length === 1) { matches = named; target = named[0].target; }
+    }
+    if (matches.length === 0) {
+      let sourceContext: HerdrContext | undefined;
+      try { sourceContext = discoverAppDesktop(context, host); }
+      catch (error) { throw new Error(`Teleport cannot reach ${host}: ${sshFailure(error)}${knownMachines(direct)} The source has not moved.`); }
       if (sourceContext) return { machine: "", remoteSession: sourceContext.appSsh?.target === host ? sourceContext.appSsh.session || "default" : "default", desktop: true, sourceContext };
     }
-    if (matches.length !== 1 || typeof matches[0].name !== "string" || !matches[0].name || matches[0].name.includes("/") || (matches[0].session != null && typeof matches[0].session !== "string")) throw new Error(`Configure one persistent direct SSH core machine for ${host} before teleporting.`);
-    return { machine: matches[0].name, remoteSession: matches[0].session || "default" };
+    if (matches.length !== 1 || typeof matches[0].name !== "string" || !matches[0].name || matches[0].name.includes("/") || (matches[0].session != null && typeof matches[0].session !== "string")) throw new Error(`Configure one persistent direct SSH core machine for ${host} before teleporting.${knownMachines(direct)}`);
+    return { machine: matches[0].name, remoteSession: matches[0].session || "default", ...(target === host ? {} : { target }) };
   }
   const profiles = JSON.parse(execFileSync("herdr", ["machine", "list", "--json"], { encoding: "utf8", timeout: 15_000 }));
   const matches = profiles.filter((profile: any) => profile.enabled && profile.target === host);
   if (matches.length !== 1) throw new Error(`Configure one enabled Herdr machine for SSH target ${host} before teleporting.`);
   return { machine: matches[0].id, remoteSession: matches[0].session };
+}
+
+/** SSH's own diagnostic, without the encoded remote program that execFileSync puts in its message. */
+function sshFailure(error: unknown): string {
+  const stderr = String((error as { stderr?: Buffer | string })?.stderr ?? "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const diagnostic = stderr.find((line) => /^ssh:/i.test(line)) ?? stderr.at(-1);
+  if (diagnostic) return diagnostic.endsWith(".") ? diagnostic : `${diagnostic}.`;
+  const message = error instanceof Error ? error.message.split("\n")[0] : String(error);
+  return message.startsWith("Command failed:") ? "SSH did not connect." : message;
+}
+/** Name every target the agent can use instead of guessing from SSH config. */
+function knownMachines(profiles: any[]): string {
+  const usable = profiles.filter((profile) => typeof profile.name === "string" && profile.name && typeof profile.target === "string" && sshAlias.test(profile.target));
+  if (!usable.length) return " No direct Herdr machines are configured; add one with hc machine add.";
+  return ` Use a Herdr machine name or its SSH target: ${usable.map((profile) => `${profile.name} (${profile.target})`).join(", ")}.`;
 }
 
 /** Detachment does not escape core's terminal sweep token. Drop origin identity too. */

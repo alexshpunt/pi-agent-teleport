@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { appSpaces } from "./app.ts";
 import { isHerdrShell, runHerdr, type HerdrContext } from "./herdr.ts";
-import { createManagedWorktree, prepareHerdrDestination, readState, removeManagedWorktree, writeState } from "./core.ts";
+import { createManagedWorktree, prepareHerdrArrival, prepareHerdrDestination, readState, removeManagedWorktree, writeState } from "./core.ts";
 
 vi.mock("./herdr.ts", async (original) => ({ ...await original<typeof import("./herdr.ts")>(), runHerdr: vi.fn(), assertHerdrContext: vi.fn(), isHerdrShell: vi.fn(() => true) }));
 vi.mock("./app.ts", async (original) => ({ ...await original<typeof import("./app.ts")>(), appSpaces: vi.fn() }));
@@ -62,4 +62,21 @@ test("removing a legacy checkout does not touch other App terminals", () => {
   expect(existsSync(f.path)).toBe(false);
   expect(runHerdr).not.toHaveBeenCalled();
   expect(appSpaces).not.toHaveBeenCalled();
+});
+
+test("an arrival from another machine joins the destination space named like the source space, not one with the same folder", () => {
+  const f = repo();
+  vi.mocked(appSpaces).mockReturnValue([
+    { id: "sp1", name: "herdr-app", folder: f.root, tabs: [{ id: "tb1", terminals: [{ terminal: "t1", pane: "p1" }] }] },
+    { id: "sp7", name: "pi-agent-ide · LPT-1435 ssh-transfer flake", folder: "/elsewhere", tabs: [] },
+  ]);
+  prepareHerdrArrival(context, f.root, "fix-ssh-transfer", { space: "pi-agent-ide · LPT-1435 ssh-transfer flake", tab: "LPT-1435 flake" });
+  expect(vi.mocked(runHerdr).mock.calls.map(([, args]) => args)).toEqual([["tab", "create", "--workspace", "sp7", "--cwd", f.root, "--label", "LPT-1435 flake", "--no-focus"]]);
+});
+
+test("an arrival creates the source space by name when the destination has none, and rolls it back whole", () => {
+  const f = repo();
+  const destination = prepareHerdrArrival(context, f.root, "fix-ssh-transfer", { space: "pi-agent-ide · LPT-1435 ssh-transfer flake" });
+  expect(vi.mocked(runHerdr).mock.calls.map(([, args]) => args)).toEqual([["workspace", "create", "--cwd", f.root, "--label", "pi-agent-ide · LPT-1435 ssh-transfer flake", "--tab-label", "fix-ssh-transfer", "--no-focus"]]);
+  expect(destination.rollbackArgs).toEqual(["workspace", "close", "sp2"]);
 });

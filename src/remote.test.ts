@@ -4,7 +4,27 @@ import { createServer, Socket } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { spawn } from "node:child_process";
-import { fingerprintFiles, waitForForward, validProbe, remoteNodeCommand, independentProcessEnvironment, confirmArrival, hasSessionProcess, parseTarget, qualifyLocation, relocateSession, requestController, UnknownRemoteOutcome, validateReady, waitForReceipt } from "./remote.ts";
+import { fingerprintFiles, revisionMismatch, runtimeRevision, waitForForward, validProbe, remoteNodeCommand, independentProcessEnvironment, confirmArrival, controllerAnswers, hasSessionProcess, parseTarget, qualifyLocation, relocateSession, requestController, UnknownRemoteOutcome, validateReady, waitForReceipt } from "./remote.ts";
+
+test("a Teleport mismatch names the branch and commit each machine runs", () => {
+  const repo = mkdtempSync(join(resolve(".tmp"), "revision-"));
+  try {
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
+    git("init", "-q", "-b", "develop");
+    writeFileSync(join(repo, "index.ts"), "export {};\n");
+    git("add", ".");
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
+    const commit = git("rev-parse", "--short", "HEAD");
+    expect(runtimeRevision(repo)).toBe(`develop@${commit}`);
+    writeFileSync(join(repo, "index.ts"), "export const changed = 1;\n");
+    expect(runtimeRevision(repo)).toBe(`develop@${commit} with uncommitted changes`);
+    git("checkout", "-q", "--detach");
+    expect(runtimeRevision(repo)).toBe(`${commit} with uncommitted changes`);
+    expect(runtimeRevision(join(repo, "missing"))).toBe("an unknown revision");
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+  expect(revisionMismatch("zinlaptop-win", "main@79a28ec", "develop@03afa40")).toBe("Teleport differs between the machines: this machine runs main@79a28ec, zinlaptop-win runs develop@03afa40. Put both on the same revision, then retry. The source is unchanged.");
+  expect(revisionMismatch("old-host", "main@79a28ec", undefined)).toContain("old-host runs an unknown revision");
+}, 30_000);
 
 test("matching Windows and Unix checkouts have the same runtime fingerprint", () => {
   const unix = [{ name: "entry.ts", content: "const x = 1;\nconst y = 2;\n" }];
@@ -79,6 +99,25 @@ test("a Windows callback uses the authenticated loopback forwarding channel", as
 
 test("a forwarded callback rejects non-loopback TCP addresses", async () => {
   await expect(requestController({ socket: "tcp://192.0.2.1:22", token: "secret" }, { action: "return" })).rejects.toBeInstanceOf(Error);
+});
+
+test("a controller probe tells a running controller from an ended route", async () => {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  expect(await controllerAnswers({ socket: `tcp://127.0.0.1:${port}`, token: "route" })).toBe(false);
+  // A forward whose listener is gone accepts and then resets the connection.
+  await withSocket((socket) => socket.once("data", () => socket.destroy()), async (socket) => {
+    expect(await controllerAnswers({ socket, token: "route" })).toBe(false);
+  });
+  await withSocket((socket) => socket.once("data", () => socket.end(`${JSON.stringify({ ok: true })}\n`)), async (socket) => {
+    expect(await controllerAnswers({ socket, token: "route" })).toBe(true);
+  });
+  // An older controller refuses the unknown probe, but it answers.
+  await withSocket((socket) => socket.once("data", () => socket.end(`${JSON.stringify({ ok: false, error: "The return route is not available for this operation." })}\n`)), async (socket) => {
+    expect(await controllerAnswers({ socket, token: "route" })).toBe(true);
+  });
 });
 
 test("a known callback refusal differs from an unknown disconnected outcome", async () => {
