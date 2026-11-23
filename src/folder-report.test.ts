@@ -4,7 +4,7 @@ import { createServer } from "node:net";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import teleport from "./index.ts";
-import { clearedFolderReport, folderReport, writeFolderReport } from "./folder-report.ts";
+import { clearedFolderReport, folderReport, launchFolder, quitReport, sameFolder, writeFolderReport } from "./folder-report.ts";
 
 const osc = (url: string) => `\x1b]7;${url}?herdr-pid=${process.pid}\x1b\\`;
 
@@ -26,6 +26,63 @@ test("reports UNC shares with the local host and an encoded path", () => {
 
 test("identifies the reporting process for delayed listings and replay", () => {
   expect(folderReport("/src", { host: "box", windows: false })).toBe(`\x1b]7;file://box/src?herdr-pid=${process.pid}\x1b\\`);
+});
+
+test("a quit after a move hands the folder to the shell; without a move or a core it clears", () => {
+  const handoff = folderReport("/src/feature", { token: "tok", handoff: true });
+  expect(handoff).toBe(folderReport("/src/feature", { token: "tok" }).replace("\x1b\\", "&herdr-handoff=1\x1b\\"));
+  // Never without an identified reporter.
+  expect(folderReport("/src/feature", { handoff: true })).toBe(folderReport("/src/feature"));
+  expect(quitReport("/src/feature", "tok", "/src/main")).toBe(handoff);
+  expect(quitReport("/src/main/", "tok", "/src/main")).toBe(clearedFolderReport);
+  expect(quitReport("/src/feature", undefined, "/src/main")).toBe(clearedFolderReport);
+});
+
+test("knows the launch folder after a move and compares folders as the system does", () => {
+  const launch = launchFolder();
+  const previous = process.cwd();
+  process.chdir(root);
+  try {
+    expect(launchFolder()).toBe(launch);
+  } finally {
+    process.chdir(previous);
+  }
+  expect(sameFolder("C:\\Dev\\App\\", "c:\\dev\\app", true)).toBe(true);
+  expect(sameFolder("C:\\dev\\app", "C:\\dev\\other", true)).toBe(false);
+  expect(sameFolder("/src/App", "/src/app", false)).toBe(false);
+  expect(sameFolder("/", "/", false)).toBe(true);
+});
+
+test("quitting after a move reports a handoff with the process token", async () => {
+  const socket = process.platform === "win32" ? `\\\\.\\pipe\\teleport-handoff-${process.pid}-${Date.now()}` : join(root, "handoff.sock");
+  const server = createServer((connection) => {
+    let data = "";
+    connection.on("data", (chunk) => {
+      data += chunk.toString();
+      if (!data.includes("\n")) return;
+      const request = JSON.parse(data.slice(0, data.indexOf("\n")));
+      connection.end(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { token: "tok", in_front: null } })}\n`);
+    });
+  });
+  await new Promise<void>((resolve, reject) => server.once("error", reject).listen(socket, resolve));
+  try {
+    vi.stubEnv("HC_TERMINAL_ID", "t7");
+    vi.stubEnv("HC_TERMINAL_SOCKET", socket);
+    const fire = hooks();
+    const writes = terminal();
+    const moved = join(root, "moved");
+    await fire("session_start", { reason: "startup" }, session(launchFolder()));
+    await fire("session_shutdown", { reason: "resume" }, session(launchFolder()));
+    await fire("session_start", { reason: "resume" }, session(moved));
+    await fire("session_shutdown", { reason: "quit" }, session(moved));
+    expect(writes).toEqual([
+      folderReport(launchFolder(), { token: "tok" }),
+      folderReport(moved, { token: "tok" }),
+      folderReport(moved, { token: "tok", handoff: true }),
+    ]);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
 });
 
 test("writes only from the TUI to a terminal", () => {
