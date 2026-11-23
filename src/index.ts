@@ -9,7 +9,7 @@ import { ownsExecution, registerTeleportOutput, type TeleportExecution, type Tel
 import { createManagedWorktree, preserveHerdrSourceWorkspace, readState, reconcileState, removeManagedWorktree, writeState, type ArrivalPlacement, type Resource } from "./core.ts";
 import { appConnection, assertHerdrContext, getHerdrContext, powershellCommand, powershellQuote, type HerdrContext } from "./herdr.ts";
 import { preflightSession, writeReadiness } from "./readiness.ts";
-import { clearedFolderReport, folderReport, processToken, writeFolderReport } from "./folder-report.ts";
+import { folderReport, processToken, quitReport, writeFolderReport } from "./folder-report.ts";
 import { appPlacement, assertAppHost } from "./app.ts";
 import { StringEnum } from "./string-enum.ts";
 import { UnknownRemoteOutcome, agentDirectory, controllerAnswers, piCommand, type ModelIdentity, confirmArrival, extensionFile, parseTarget, probeRemote, qualifyLocation, remoteMachine, requestController, runtimeFingerprint, runtimeRevision, shellQuote as quote, startAppSourceCleanup, startRemoteMove, startSessionCleanup, workerFile } from "./remote.ts";
@@ -91,6 +91,8 @@ export default function teleport(pi: ExtensionAPI) {
   let sessionId = "unknown";
   let reportGeneration = 0;
   let reportRetry: NodeJS.Timeout | undefined;
+  /** The process token the terminal's core issued, for the handoff on quit. */
+  let reportToken: string | undefined;
   let dir = dataDir(sessionId);
   const notify = (ctx: ExtensionCommandContext, text: string, level: "info" | "error" = "info") => ctx.ui.notify(text, level);
 
@@ -484,26 +486,30 @@ export default function teleport(pi: ExtensionAPI) {
     const env = { ...process.env };
     const token = await processToken(env);
     if (generation !== reportGeneration) return;
+    reportToken = token;
     writeFolderReport(ctx.mode, folderReport(ctx.cwd, { token }));
     if (!token && env.HC_TERMINAL_ID && env.HC_TERMINAL_SOCKET && (!env.HC_SOCKET || env.HC_SOCKET === env.HC_TERMINAL_SOCKET)) {
       const retry = (delay: number) => {
         reportRetry = setTimeout(async () => {
           const token = await processToken(env);
           if (generation !== reportGeneration) return;
-          if (token) writeFolderReport(ctx.mode, folderReport(ctx.cwd, { token }));
-          else retry(Math.min(delay * 2, 30_000));
+          if (token) {
+            reportToken = token;
+            writeFolderReport(ctx.mode, folderReport(ctx.cwd, { token }));
+          } else retry(Math.min(delay * 2, 30_000));
         }, delay);
         reportRetry.unref();
       };
       retry(1000);
     }
   });
-  // A replaced session's successor reports its own folder; only an exit clears it,
-  // so the shell that may follow is not shown in the agent's folder.
+  // A replaced session's successor reports its own folder. Only an exit ends it:
+  // after a move, with a handoff that asks Herdr to move the shell Pi returns
+  // to; otherwise by clearing it, so that shell is shown in its own folder.
   pi.on("session_shutdown", (event, ctx) => {
     reportGeneration++;
     clearTimeout(reportRetry);
-    if (event.reason === "quit" && !process.env.PI_TELEPORT_PREFLIGHT) writeFolderReport(ctx.mode, clearedFolderReport);
+    if (event.reason === "quit" && !process.env.PI_TELEPORT_PREFLIGHT) writeFolderReport(ctx.mode, quitReport(ctx.cwd, reportToken));
   });
   // The initial arrival command runs only after Pi has finished every startup hook.
   pi.registerCommand("__teleport_arrival", {
