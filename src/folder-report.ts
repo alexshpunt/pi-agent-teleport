@@ -1,6 +1,6 @@
 import { hostname } from "node:os";
 import { createConnection } from "node:net";
-import { win32 } from "node:path";
+import { posix, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /**
@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
  * agent under that folder; the Pi process folder alone is invisible to them
  * on Windows.
  */
-export function folderReport(cwd: string, options: { host?: string; windows?: boolean; token?: string } = {}): string {
+export function folderReport(cwd: string, options: { host?: string; windows?: boolean; token?: string; handoff?: boolean } = {}): string {
   const windows = options.windows ?? process.platform === "win32";
   const url = pathToFileURL(cwd, { windows });
   // Use the original path to detect UNC: file URLs normalize localhost away.
@@ -22,7 +22,9 @@ export function folderReport(cwd: string, options: { host?: string; windows?: bo
   const target = `file://${encodeURIComponent(options.host ?? hostname())}${path}`;
   // The receiver must not bind a replay or an early report to the wrong PID.
   const token = options.token ? `&herdr-token=${encodeURIComponent(options.token)}` : "";
-  return `\x1b]7;${target}?herdr-pid=${process.pid}${token}\x1b\\`;
+  // Herdr trusts a handoff only from a reporter its core identified.
+  const handoff = options.token && options.handoff ? "&herdr-handoff=1" : "";
+  return `\x1b]7;${target}?herdr-pid=${process.pid}${token}${handoff}\x1b\\`;
 }
 
 /** Ask the terminal's existing core to identify this process instance. */
@@ -52,6 +54,35 @@ export function processToken(env: NodeJS.ProcessEnv = process.env): Promise<stri
     socket.on("end", () => finish());
   });
 }
+
+const LAUNCH_FOLDER = Symbol.for("pi-agent-teleport.launch-folder");
+
+/**
+ * The folder Pi's process started in: the folder of the shell that started it.
+ * Kept on the process, so an extension reload after a move still knows it.
+ */
+export function launchFolder(): string {
+  const store = globalThis as { [LAUNCH_FOLDER]?: string };
+  return store[LAUNCH_FOLDER] ??= process.cwd();
+}
+launchFolder();
+
+/** Whether two absolute folders are the same; Windows ignores letter case. */
+export function sameFolder(a: string, b: string, windows = process.platform === "win32"): boolean {
+  const path = windows ? win32 : posix;
+  const normal = (p: string) => path.resolve(p).replace(/[\\/]+$/, "") || path.sep;
+  return windows ? normal(a).toLowerCase() === normal(b).toLowerCase() : normal(a) === normal(b);
+}
+
+/**
+ * The last report before Pi quits. After a move, a handoff asks Herdr to move
+ * the shell Pi returns to; otherwise an empty report ends the folder, so the
+ * shell is shown in its own one again.
+ */
+export function quitReport(cwd: string, token: string | undefined, launch = launchFolder()): string {
+  return token && !sameFolder(cwd, launch) ? folderReport(cwd, { token, handoff: true }) : clearedFolderReport;
+}
+
 /** An empty OSC 7: the session no longer reports a folder. */
 export const clearedFolderReport = "\x1b]7;\x1b\\";
 
