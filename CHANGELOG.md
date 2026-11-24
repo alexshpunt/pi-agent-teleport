@@ -4,6 +4,8 @@
 
 - When Pi quits after a move inside herdr-core, hand the session's folder to the shell Pi returns to (`herdr-handoff=1` on the last OSC 7 report) instead of clearing it. Herdr App then moves that shell to the folder. Without a move, or outside herdr-core, Teleport still clears the report.
 - Give the Git worktree tests of `app-worktree.test.ts` 20 seconds: beside the rest of the suite, real Git could exceed Vitest's 5-second default.
+- Start the destination Pi on Linux and macOS in its own foreground process group, so the terminal reports Pi, not the launch script, as its program. Herdr integrations treated the arriving Pi as a nested Pi and turned off `herdr:` resources, `replicate`, `subagent` and `agent` after a move. Ctrl+Z still returns the terminal to the shell, and `fg` resumes Pi.
+- When this Pi still runs a Teleport loaded before its files changed, say to reload Pi instead of reporting two equal revisions as different.
 
 ## 0.2.12 - 2026-11-22
 
