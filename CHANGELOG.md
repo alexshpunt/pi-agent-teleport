@@ -5,7 +5,7 @@
 - A session that returns with `back` no longer keeps the App route of the move that first brought it to that machine. That route's controller ended when the session left, so the returned Pi could not move again ("connect ENOENT …/return.sock") and lost Herdr App access. The returned Pi now finds the App as a Pi started on that machine does.
 - When Pi quits after a move inside herdr-core, hand the session's folder to the shell Pi returns to (`herdr-handoff=1` on the last OSC 7 report) instead of clearing it. Herdr App then moves that shell to the folder. Without a move, or outside herdr-core, Teleport still clears the report.
 - Give the Git worktree tests of `app-worktree.test.ts` 20 seconds: beside the rest of the suite, real Git could exceed Vitest's 5-second default.
-- Accept any SSH alias of a saved Herdr machine as a remote target, such as `ssh://zinlaptop-wsl/...` for a machine saved with the target `mesh-zinlaptop-wsl`. Teleport compares the user, address and port that OpenSSH gives both aliases.
+- Accept any SSH alias of a saved Herdr machine as a remote target, such as `ssh://workstation/...` for a machine saved with the target `mesh-workstation`. Teleport compares the user, address and port that OpenSSH gives both aliases.
 - Start the destination Pi on Linux and macOS in its own foreground process group, so the terminal reports Pi, not the launch script, as its program. Herdr integrations treated the arriving Pi as a nested Pi and turned off `herdr:` resources, `replicate`, `subagent` and `agent` after a move. Ctrl+Z still returns the terminal to the shell, and `fg` resumes Pi.
 - When this Pi still runs a Teleport loaded before its files changed, say to reload Pi instead of reporting two equal revisions as different.
 

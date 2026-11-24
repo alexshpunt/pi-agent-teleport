@@ -23,7 +23,7 @@ test.runIf(process.env.PI_TEST_APP_ROUNDTRIP === "1")("a native Pi session visit
   const laptopRoot = process.env.PI_TEST_LAPTOP_ROOT!;
   const laptopSource = process.env.PI_TEST_LAPTOP_SOURCE!;
   if (!process.env.HERDR_APP_HOME?.includes("lpt1201-adapter") || !laptopRoot.includes("/.tmp/twohost-")) throw new Error("Use only the owned two-host fixture.");
-  const host = "mesh-zinlaptop-wsl";
+  const host = "mesh-workstation";
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "teleport-app-roundtrip-")));
   const sourceCwd = join(directory, "source");
   const agentDir = join(directory, "agent");

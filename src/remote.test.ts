@@ -23,10 +23,10 @@ test("a Teleport mismatch names the branch and commit each machine runs", () => 
     expect(runtimeRevision(repo)).toBe(`${commit} with uncommitted changes`);
     expect(runtimeRevision(join(repo, "missing"))).toBe("an unknown revision");
   } finally { rmSync(repo, { recursive: true, force: true }); }
-  expect(revisionMismatch("zinlaptop-win", "main@79a28ec", "develop@03afa40")).toBe("Teleport differs between the machines: this machine runs main@79a28ec, zinlaptop-win runs develop@03afa40. Put both on the same revision, then retry. The source is unchanged.");
+  expect(revisionMismatch("workstation-win", "main@79a28ec", "develop@03afa40")).toBe("Teleport differs between the machines: this machine runs main@79a28ec, workstation-win runs develop@03afa40. Put both on the same revision, then retry. The source is unchanged.");
   expect(revisionMismatch("old-host", "main@79a28ec", undefined)).toContain("old-host runs an unknown revision");
   // Both checkouts on develop@2dafae5, but this Pi loaded Teleport before its files changed.
-  expect(revisionMismatch("zinlaptop-win", "develop@2dafae5", "develop@2dafae5", true)).toBe("This Pi still runs the Teleport it loaded before its files changed to develop@2dafae5. Reload Pi (/reload), then retry. The source is unchanged.");
+  expect(revisionMismatch("workstation-win", "develop@2dafae5", "develop@2dafae5", true)).toBe("This Pi still runs the Teleport it loaded before its files changed to develop@2dafae5. Reload Pi (/reload), then retry. The source is unchanged.");
 }, 30_000);
 
 test("matching Windows and Unix checkouts have the same runtime fingerprint", () => {
