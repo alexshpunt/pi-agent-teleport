@@ -286,6 +286,13 @@ export function remoteMachine(host: string, context?: HerdrContext): { machine: 
       const named = direct.filter((profile: any) => profile.name === host && typeof profile.target === "string" && sshAlias.test(profile.target));
       if (named.length === 1) { matches = named; target = named[0].target; }
     }
+    // Another SSH alias of a saved machine, such as `zinlaptop-wsl` for a machine saved as `mesh-zinlaptop-wsl`.
+    const usable = direct.filter((profile: any) => typeof profile.target === "string" && sshAlias.test(profile.target));
+    if (matches.length === 0 && usable.length) {
+      const endpoint = sshEndpoint(host);
+      const same = endpoint ? usable.filter((profile: any) => sshEndpoint(profile.target) === endpoint) : [];
+      if (same.length === 1) { matches = same; target = same[0].target; }
+    }
     if (matches.length === 0) {
       let sourceContext: HerdrContext | undefined;
       try { sourceContext = discoverAppDesktop(context, host); }
@@ -299,6 +306,15 @@ export function remoteMachine(host: string, context?: HerdrContext): { machine: 
   const matches = profiles.filter((profile: any) => profile.enabled && profile.target === host);
   if (matches.length !== 1) throw new Error(`Configure one enabled Herdr machine for SSH target ${host} before teleporting.`);
   return { machine: matches[0].id, remoteSession: matches[0].session };
+}
+
+/** The user, address and port that OpenSSH's configuration gives an alias, or nothing when SSH cannot tell. */
+function sshEndpoint(alias: string): string | undefined {
+  try {
+    const fields = Object.fromEntries(String(execFileSync("ssh", ["-G", alias], { encoding: "utf8", timeout: 5_000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }))
+      .split(/\r?\n/).map((line) => line.split(" ")).filter((parts) => parts.length >= 2).map(([key, ...value]) => [key.toLowerCase(), value.join(" ")]));
+    return fields.hostname && fields.port ? `${fields.user ?? ""}@${fields.hostname}:${fields.port}` : undefined;
+  } catch { return undefined; }
 }
 
 /** SSH's own diagnostic, without the encoded remote program that execFileSync puts in its message. */
