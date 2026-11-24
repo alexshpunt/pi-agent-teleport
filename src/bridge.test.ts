@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { abortArrival, assertReadyProcess, commitArrival, stageArrival, watchArrival } from "./bridge.ts";
+import { abortArrival, assertReadyProcess, commitArrival, returnConnection, stageArrival, watchArrival } from "./bridge.ts";
 import { readState, writeState } from "./core.ts";
 import { runHerdr } from "./herdr.ts";
 import { runtimeFingerprint, UnknownRemoteOutcome } from "./remote.ts";
@@ -17,6 +17,14 @@ test("an unstable process snapshot is inconclusive, not a foreign process", () =
   expect(() => assertReadyProcess({ shell_owns_foreground: false, foreground_processes: [] }, 42, "/source", "/source/session")).toThrow(UnknownRemoteOutcome);
   expect(() => assertReadyProcess({ shell_owns_foreground: false, foreground_processes: [{ pid: 99, cwd: "/source", argv: ["other"] }] }, 42, "/source", "/source/session")).toThrowError();
   expect(() => assertReadyProcess({ shell_owns_foreground: false, foreground_processes: [{ pid: 42, cwd: "/source", argv: ["pi"] }] }, 42, "/source", "/source/session")).not.toThrow();
+});
+test("a returning session drops the App route of the move that brought its source, which ended with that source", () => {
+  const source = { backend: "app" as const, paneId: "t1", workspaceId: "sp1", tabId: "tb1", session: "default", appMachine: "laptop-wsl",
+    appRoute: { socket: "/tmp/pi-teleport-old/return.sock", token: "secret", operationId: "earlier-move" } };
+  const connection = returnConnection(source);
+  expect(connection).not.toHaveProperty("appRoute");
+  expect(connection).toMatchObject({ backend: "app", paneId: "t1", appMachine: "laptop-wsl" });
+  expect(source.appRoute.operationId).toBe("earlier-move");
 });
 const fixtures: string[] = [];
 let originalAgentDir: string | undefined;

@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- A session that returns with `back` no longer keeps the App route of the move that first brought it to that machine. That route's controller ended when the session left, so the returned Pi could not move again ("connect ENOENT …/return.sock") and lost Herdr App access. The returned Pi now finds the App as a Pi started on that machine does.
 
 - When Pi quits after a move inside herdr-core, hand the session's folder to the shell Pi returns to (`herdr-handoff=1` on the last OSC 7 report) instead of clearing it. Herdr App then moves that shell to the folder. Without a move, or outside herdr-core, Teleport still clears the report.
 - Give the Git worktree tests of `app-worktree.test.ts` 20 seconds: beside the rest of the suite, real Git could exceed Vitest's 5-second default.
