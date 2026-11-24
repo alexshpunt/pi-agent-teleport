@@ -49,15 +49,21 @@ unrelated panes stay open.
 
 In an interactive terminal, Teleport reports the session's folder with the standard
 OSC 7 sequence (`ESC ] 7 ; file://<host>/<path> ESC \`) when a session starts and after
-every move, and clears it when Pi quits. Terminals that read OSC 7, such as Herdr App,
+every move, and ends it when Pi quits. Terminals that read OSC 7, such as Herdr App,
 show the agent under its current folder, also on Windows, where Pi's process folder is
 not visible to them. Inside herdr-core, the URI includes the reporter's PID and a
 process token issued by its holder. Herdr uses the token to reject an old replay and
 recognize Pi behind shell wrappers. Cores without process-token support need an update;
-terminals opened before the update need to be reopened. For a Windows UNC folder,
-Teleport puts the reporting machine in the URI's host and percent-encodes the UNC path.
-Herdr understands this form; other terminals may not. Print, JSON and RPC modes write
-nothing.
+terminals opened before the update need to be reopened.
+
+When Pi quits after a move, its last report inside herdr-core is a handoff
+(`&herdr-handoff=1`): Herdr App then types a `cd` into the shell Pi returns to, so the
+shell continues in the session's last folder. Without a move, or outside herdr-core,
+Teleport clears the report instead, and the shell is shown in its own folder.
+
+For a Windows UNC folder, Teleport puts the reporting machine in the URI's host and
+percent-encodes the UNC path. Herdr understands this form; other terminals may not.
+Print, JSON and RPC modes write nothing.
 
 ## Remote machines
 
@@ -75,7 +81,7 @@ Before moving:
 - Run Herdr on both machines. Add the destination as a saved direct Herdr machine.
   Address it by its SSH alias. From a Herdr App terminal, its machine name works too,
   as `hc machine ls` lists them: `ssh://laptop-wsl/root/dev/project` and
-  `ssh://mesh-zinlaptop-wsl/root/dev/project` reach the same machine. Native Herdr
+  `ssh://mesh-workstation/root/dev/project` reach the same machine. Native Herdr
   machine IDs are not accepted as targets. When moving from an App-managed remote
   terminal to the computer hosting its window, Teleport identifies that desktop from
   the source workspace, tab and terminal instead.

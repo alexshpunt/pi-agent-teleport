@@ -33,25 +33,45 @@ test("App machine discovery consumes native profile names and sessions, not lega
 
 test("a Herdr machine name resolves to its saved SSH target", () => {
   vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ machines: [
-    { name: "laptop-wsl", target: "mesh-zinlaptop-wsl", session: null, via: false, temporary: false },
+    { name: "laptop-wsl", target: "mesh-workstation", session: null, via: false, temporary: false },
     { name: "vps", target: "mesh-vps", session: null, via: false, temporary: false },
   ] }));
-  expect(remoteMachine("laptop-wsl", app)).toEqual({ machine: "laptop-wsl", remoteSession: "default", target: "mesh-zinlaptop-wsl" });
+  expect(remoteMachine("laptop-wsl", app)).toEqual({ machine: "laptop-wsl", remoteSession: "default", target: "mesh-workstation" });
   expect(remoteMachine("mesh-vps", app)).toEqual({ machine: "vps", remoteSession: "default" });
   // Resolving a name needs no SSH call.
   expect(calls().every(([command]) => command === "hc")).toBe(true);
 });
 
+/** `ssh -G` output for a configured alias, as OpenSSH prints it. */
+const sshConfig = (aliases: Record<string, string>) => (alias: string) => {
+  const endpoint = aliases[alias] ?? `root ${alias} 22`;
+  const [user, hostname, port] = endpoint.split(" ");
+  return `user ${user}\nhostname ${hostname}\nport ${port}\n`;
+};
 test("an unreachable target reports SSH's reason and the usable machines, not the encoded command", () => {
-  vi.mocked(execFileSync)
-    .mockReturnValueOnce(JSON.stringify({ machines: [
-      { name: "laptop-wsl", target: "mesh-zinlaptop-wsl", via: false, temporary: false },
+  const resolve = sshConfig({});
+  vi.mocked(execFileSync).mockImplementation(((command: string, args: string[]) => {
+    if (command === "hc") return JSON.stringify({ machines: [
+      { name: "laptop-wsl", target: "mesh-workstation", via: false, temporary: false },
       { name: "sandbox", target: "mesh-sandbox", via: false, temporary: true },
-    ] }))
-    .mockImplementationOnce(() => { throw Object.assign(new Error("Command failed: ssh -T laptop node -e \"eval(Buffer.from('Y29uc3Q','base64'))\""), { stdout: "", stderr: "ssh: Could not resolve hostname laptop: No such host is known.\r\n" }); });
+    ] });
+    if (args[0] === "-G") return resolve(args[1]);
+    throw Object.assign(new Error("Command failed: ssh -T laptop node -e \"eval(Buffer.from('Y29uc3Q','base64'))\""), { stdout: "", stderr: "ssh: Could not resolve hostname laptop: No such host is known.\r\n" });
+  }) as never);
   let message = "";
   try { remoteMachine("laptop", app); } catch (error) { message = (error as Error).message; }
-  expect(message).toBe("Teleport cannot reach laptop: ssh: Could not resolve hostname laptop: No such host is known. Use a Herdr machine name or its SSH target: laptop-wsl (mesh-zinlaptop-wsl). The source has not moved.");
+  expect(message).toBe("Teleport cannot reach laptop: ssh: Could not resolve hostname laptop: No such host is known. Use a Herdr machine name or its SSH target: laptop-wsl (mesh-workstation). The source has not moved.");
+});
+
+test("another SSH alias of a saved machine reaches that machine", () => {
+  const resolve = sshConfig({ "workstation": "root 192.0.2.10 2222", "mesh-workstation": "root 192.0.2.10 2222", "mesh-vps": "root 192.0.2.20 22" });
+  vi.mocked(execFileSync).mockImplementation(((command: string, args: string[]) => command === "hc"
+    ? JSON.stringify({ machines: [
+      { name: "laptop-wsl", target: "mesh-workstation", session: null, via: false, temporary: false },
+      { name: "vps", target: "mesh-vps", session: null, via: false, temporary: false },
+    ] })
+    : resolve(args[1])) as never);
+  expect(remoteMachine("workstation", app)).toEqual({ machine: "laptop-wsl", remoteSession: "default", target: "mesh-workstation" });
 });
 
 test("App routing rejects a window that does not contain the calling terminal", () => {

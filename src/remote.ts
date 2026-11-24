@@ -92,8 +92,12 @@ export function runtimeRevision(dir = sourceDir): string {
   } catch { return "an unknown revision"; }
 }
 
-/** Explain a Teleport mismatch between two machines by the revision each one runs. */
-export function revisionMismatch(host: string, local: string, remote: string | undefined): string {
+/**
+ * Explain a Teleport mismatch between two machines by the revision each one runs. When this Pi
+ * loaded Teleport before its files changed, the revisions on disk can be equal: name the reload.
+ */
+export function revisionMismatch(host: string, local: string, remote: string | undefined, staleLocal = false): string {
+  if (staleLocal) return `This Pi still runs the Teleport it loaded before its files changed to ${local}. Reload Pi (/reload), then retry. The source is unchanged.`;
   return `Teleport differs between the machines: this machine runs ${local}, ${host} runs ${remote || "an unknown revision"}. Put both on the same revision, then retry. The source is unchanged.`;
 }
 
@@ -261,7 +265,7 @@ child.on('close',code=>{clearTimeout(timer);process.exitCode=code??1});`;
   }
   const probes = output.split("\n").filter((line) => line.startsWith(prefix)).map((line) => JSON.parse(line.slice(prefix.length)));
   if (probes.length === 1 && typeof probes[0]?.fingerprint === "string" && probes[0].fingerprint !== expectedFingerprint) {
-    throw new Error(revisionMismatch(host, runtimeRevision(), typeof probes[0].revision === "string" ? probes[0].revision : undefined));
+    throw new Error(revisionMismatch(host, runtimeRevision(), typeof probes[0].revision === "string" ? probes[0].revision : undefined, runtimeFingerprint() !== expectedFingerprint));
   }
   if (probes.length !== 1 || !validProbe(probes[0], expectedFingerprint)) {
     throw new Error(`Install or update Teleport on ${host} to this implementation, then retry. A usable current Teleport is required for the return journey. The source is unchanged.`);
@@ -282,6 +286,13 @@ export function remoteMachine(host: string, context?: HerdrContext): { machine: 
       const named = direct.filter((profile: any) => profile.name === host && typeof profile.target === "string" && sshAlias.test(profile.target));
       if (named.length === 1) { matches = named; target = named[0].target; }
     }
+    // Another SSH alias of a saved machine, such as `workstation` for a machine saved as `mesh-workstation`.
+    const usable = direct.filter((profile: any) => typeof profile.target === "string" && sshAlias.test(profile.target));
+    if (matches.length === 0 && usable.length) {
+      const endpoint = sshEndpoint(host);
+      const same = endpoint ? usable.filter((profile: any) => sshEndpoint(profile.target) === endpoint) : [];
+      if (same.length === 1) { matches = same; target = same[0].target; }
+    }
     if (matches.length === 0) {
       let sourceContext: HerdrContext | undefined;
       try { sourceContext = discoverAppDesktop(context, host); }
@@ -295,6 +306,15 @@ export function remoteMachine(host: string, context?: HerdrContext): { machine: 
   const matches = profiles.filter((profile: any) => profile.enabled && profile.target === host);
   if (matches.length !== 1) throw new Error(`Configure one enabled Herdr machine for SSH target ${host} before teleporting.`);
   return { machine: matches[0].id, remoteSession: matches[0].session };
+}
+
+/** The user, address and port that OpenSSH's configuration gives an alias, or nothing when SSH cannot tell. */
+function sshEndpoint(alias: string): string | undefined {
+  try {
+    const fields = Object.fromEntries(String(execFileSync("ssh", ["-G", alias], { encoding: "utf8", timeout: 5_000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }))
+      .split(/\r?\n/).map((line) => line.split(" ")).filter((parts) => parts.length >= 2).map(([key, ...value]) => [key.toLowerCase(), value.join(" ")]));
+    return fields.hostname && fields.port ? `${fields.user ?? ""}@${fields.hostname}:${fields.port}` : undefined;
+  } catch { return undefined; }
 }
 
 /** SSH's own diagnostic, without the encoded remote program that execFileSync puts in its message. */

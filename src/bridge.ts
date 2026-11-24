@@ -77,6 +77,16 @@ export function watchArrival(input: { failure?: () => string | undefined | Promi
   return { ready, resolve: () => finish(), reject: (error) => finish(error) };
 }
 
+/**
+ * The connection for a session that returns to the terminal it left. The source Pi may have reached the App
+ * through the controller of an earlier move; that controller ended when the source Pi left, so its route is
+ * dropped and the returning Pi finds the App as a Pi started on this machine does.
+ */
+export function returnConnection(source: HerdrContext): HerdrContext {
+  const { appRoute: _ended, ...connection } = source;
+  return connection;
+}
+
 /** Stage only owned files and a new native Herdr arrival; do not activate the conversation. */
 export function stageArrival(input: Arrival): Prepared {
   if (input.fingerprint !== implementation) throw new Error(`Teleport differs between the machines: the source runs ${input.sourceRevision || "an unknown revision"}, this machine runs ${runtimeRevision()}. Put both on the same revision, then retry.`);
@@ -456,7 +466,7 @@ async function controller(config: string): Promise<void> {
         state.resources = mergeMachineResources(move.state.resources, remoteState.resources, move.host);
         const input: Arrival = {
           operationId: randomUUID(), sessionId: move.sessionId, sessionText: packet.sessionText, path: move.sourceCwd, sessionName: packet.sessionName,
-          state, connection: move.herdr, callback: { socket: localSocket, token }, fingerprint: move.fingerprint,
+          state, connection: returnConnection(move.herdr), callback: { socket: localSocket, token }, fingerprint: move.fingerprint,
           dormantSource: { operationId: move.id, sessionFile: move.sourceSession, cwd: move.sourceCwd, snapshot: move.sessionText },
           from: qualifyLocation(packet.cwd, move.host), to: qualifyLocation(move.sourceCwd, state.machine), execution: packet.execution, expectedModel: packet.expectedModel, piCommand: move.localCommand,
           placement: packet.placement,

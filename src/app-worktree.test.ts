@@ -9,6 +9,8 @@ import { createManagedWorktree, prepareHerdrArrival, prepareHerdrDestination, re
 vi.mock("./herdr.ts", async (original) => ({ ...await original<typeof import("./herdr.ts")>(), runHerdr: vi.fn(), assertHerdrContext: vi.fn(), isHerdrShell: vi.fn(() => true) }));
 vi.mock("./app.ts", async (original) => ({ ...await original<typeof import("./app.ts")>(), appSpaces: vi.fn() }));
 const fixtures: string[] = [];
+// Real Git creates and removes worktrees; beside the rest of the suite that can take over 5 s.
+const GIT_TIMEOUT = 20_000;
 const context: HerdrContext = { backend: "app", workspaceId: "sp1", tabId: "tb1", paneId: "t1", session: "isolated", coreSocketPath: "/owned/core.sock" };
 beforeEach(() => vi.resetAllMocks());
 afterEach(() => fixtures.splice(0).forEach((path) => rmSync(path, { recursive: true, force: true })));
@@ -42,7 +44,7 @@ test("local worktree creation and legacy removal do not contact App", () => {
   expect(existsSync(f.path)).toBe(false);
   expect(readState(f.stateDir).resources[resource.id]).toBeUndefined();
   expect(runHerdr).not.toHaveBeenCalled();
-});
+}, GIT_TIMEOUT);
 
 test("returning to an existing App checkout creates a new named tab rather than stealing its shell", () => {
   const f = repo();
@@ -62,7 +64,7 @@ test("removing a legacy checkout does not touch other App terminals", () => {
   expect(existsSync(f.path)).toBe(false);
   expect(runHerdr).not.toHaveBeenCalled();
   expect(appSpaces).not.toHaveBeenCalled();
-});
+}, GIT_TIMEOUT);
 
 test("an arrival from another machine joins the destination space named like the source space, not one with the same folder", () => {
   const f = repo();
