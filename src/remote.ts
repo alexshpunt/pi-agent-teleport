@@ -92,8 +92,12 @@ export function runtimeRevision(dir = sourceDir): string {
   } catch { return "an unknown revision"; }
 }
 
-/** Explain a Teleport mismatch between two machines by the revision each one runs. */
-export function revisionMismatch(host: string, local: string, remote: string | undefined): string {
+/**
+ * Explain a Teleport mismatch between two machines by the revision each one runs. When this Pi
+ * loaded Teleport before its files changed, the revisions on disk can be equal: name the reload.
+ */
+export function revisionMismatch(host: string, local: string, remote: string | undefined, staleLocal = false): string {
+  if (staleLocal) return `This Pi still runs the Teleport it loaded before its files changed to ${local}. Reload Pi (/reload), then retry. The source is unchanged.`;
   return `Teleport differs between the machines: this machine runs ${local}, ${host} runs ${remote || "an unknown revision"}. Put both on the same revision, then retry. The source is unchanged.`;
 }
 
@@ -261,7 +265,7 @@ child.on('close',code=>{clearTimeout(timer);process.exitCode=code??1});`;
   }
   const probes = output.split("\n").filter((line) => line.startsWith(prefix)).map((line) => JSON.parse(line.slice(prefix.length)));
   if (probes.length === 1 && typeof probes[0]?.fingerprint === "string" && probes[0].fingerprint !== expectedFingerprint) {
-    throw new Error(revisionMismatch(host, runtimeRevision(), typeof probes[0].revision === "string" ? probes[0].revision : undefined));
+    throw new Error(revisionMismatch(host, runtimeRevision(), typeof probes[0].revision === "string" ? probes[0].revision : undefined, runtimeFingerprint() !== expectedFingerprint));
   }
   if (probes.length !== 1 || !validProbe(probes[0], expectedFingerprint)) {
     throw new Error(`Install or update Teleport on ${host} to this implementation, then retry. A usable current Teleport is required for the return journey. The source is unchanged.`);

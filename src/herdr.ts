@@ -45,7 +45,15 @@ function writeLauncher(argv: string[], receipt: string, env: Record<string, stri
   const launcher = join(dirname(receipt), "launch.sh");
   const wait = gate ? `while [ ! -e ${shellQuote(gate)} ]; do [ -d ${shellQuote(dirname(gate))} ] || exit 1; sleep 0.1; done\n` : "";
   const command = [...Object.entries(env).map(([name, value]) => `${name}=${shellQuote(value)}`), ...argv.map(shellQuote)].join(" ");
-  writeFileSync(launcher, `${wait}${command}; status=$?; if [ -d ${shellQuote(dirname(receipt))} ]; then printf '{"ok":false,"error":"Destination Pi exited (status %s)."}\\n' "$status" > ${shellQuote(temporary)} && mv ${shellQuote(temporary)} ${shellQuote(receipt)}; fi\n`, { mode: 0o600 });
+  // Job control gives Pi its own foreground process group, so the terminal reports Pi, not this
+  // script, as its foreground program, and Herdr integrations accept Pi as the terminal's owner.
+  // The script still waits for Pi to report how it exited.
+  const ownTerminal = "if [ -t 0 ]; then set -m 2>/dev/null; fi\n";
+  // Ctrl+Z stops only Pi's group now. Stop this script too, so the parent shell takes the terminal
+  // back as before, and resume Pi when the user continues the job with fg.
+  const jobs = join(dirname(receipt), "launch.jobs");
+  const suspend = ` while case $status in 145|146|147|148|149|150) jobs -p > ${shellQuote(jobs)} 2>/dev/null && [ -s ${shellQuote(jobs)} ];; *) false;; esac; do kill -STOP $$; fg >/dev/null; status=$?; done; rm -f ${shellQuote(jobs)};`;
+  writeFileSync(launcher, `${wait}${ownTerminal}${command}; status=$?;${suspend} if [ -d ${shellQuote(dirname(receipt))} ]; then printf '{"ok":false,"error":"Destination Pi exited (status %s)."}\\n' "$status" > ${shellQuote(temporary)} && mv ${shellQuote(temporary)} ${shellQuote(receipt)}; fi\n`, { mode: 0o600 });
   return launcher;
 }
 

@@ -145,6 +145,25 @@ test.skipIf(process.platform === "win32")("a Unix terminal program does not star
   expect(existsSync(output)).toBe(false);
 });
 
+const scriptAvailable = process.platform === "linux" && spawnSync("script", ["--version"], { timeout: 5_000 }).status === 0;
+test.skipIf(!scriptAvailable)("in a terminal, the launched Pi is the foreground process, so Herdr accepts it as the terminal's owner", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "teleport-foreground-"));
+  fixtures.push(directory);
+  const fixture = join(directory, "pi.mjs");
+  const output = join(directory, "foreground.json");
+  const receipt = join(directory, "exited.json");
+  const gate = join(directory, "handoff.json");
+  writeFileSync(gate, "{}");
+  // The terminal's foreground process group, as herdr-core reads it with tcgetpgrp.
+  writeFileSync(fixture, `import {execFileSync} from "node:child_process"; import {writeFileSync} from "node:fs"; writeFileSync(process.argv[2], JSON.stringify({pid: process.pid, foreground: Number(execFileSync("ps", ["-o", "tpgid=", "-p", String(process.pid)], {encoding: "utf8"}).trim())})); process.exit(6);`);
+  const argv = launchProgram([process.execPath, fixture, output], receipt, {}, gate, "linux");
+  const result = await runProgram(["script", "-qec", argv.map((part) => `'${part}'`).join(" "), "/dev/null"]);
+  const observed = JSON.parse(readFileSync(output, "utf8"));
+  expect(observed.foreground, result.stderr).toBe(observed.pid);
+  expect(JSON.parse(readFileSync(receipt, "utf8")).error).toBe("Destination Pi exited (status 6).");
+  expect(existsSync(join(directory, "launch.jobs"))).toBe(false);
+});
+
 test.skipIf(!available)("a Windows terminal program runs Pi from the launch script once the handoff exists", async () => {
   const directory = mkdtempSync(join(tmpdir(), "teleport program ' & $ [] "));
   fixtures.push(directory);
