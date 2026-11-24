@@ -81,7 +81,7 @@ Before moving:
 - Run Herdr on both machines. Add the destination as a saved direct Herdr machine.
   Address it by its SSH alias. From a Herdr App terminal, its machine name works too,
   as `hc machine ls` lists them: `ssh://laptop-wsl/root/dev/project` and
-  `ssh://mesh-zinlaptop-wsl/root/dev/project` reach the same machine. Native Herdr
+  `ssh://mesh-workstation/root/dev/project` reach the same machine. Native Herdr
   machine IDs are not accepted as targets. When moving from an App-managed remote
   terminal to the computer hosting its window, Teleport identifies that desktop from
   the source workspace, tab and terminal instead.

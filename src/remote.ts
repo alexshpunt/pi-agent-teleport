@@ -286,7 +286,7 @@ export function remoteMachine(host: string, context?: HerdrContext): { machine: 
       const named = direct.filter((profile: any) => profile.name === host && typeof profile.target === "string" && sshAlias.test(profile.target));
       if (named.length === 1) { matches = named; target = named[0].target; }
     }
-    // Another SSH alias of a saved machine, such as `zinlaptop-wsl` for a machine saved as `mesh-zinlaptop-wsl`.
+    // Another SSH alias of a saved machine, such as `workstation` for a machine saved as `mesh-workstation`.
     const usable = direct.filter((profile: any) => typeof profile.target === "string" && sshAlias.test(profile.target));
     if (matches.length === 0 && usable.length) {
       const endpoint = sshEndpoint(host);

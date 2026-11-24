@@ -13,15 +13,15 @@ test("reports a Unix folder as an OSC 7 file URI with the host", () => {
 });
 
 test("reports a Windows folder with forward slashes after its drive", () => {
-  expect(folderReport("C:\\Users\\me\\dev", { host: "ZinLaptop", windows: true })).toBe(osc("file://ZinLaptop/C:/Users/me/dev"));
+  expect(folderReport("C:\\Users\\me\\dev", { host: "WORKSTATION", windows: true })).toBe(osc("file://WORKSTATION/C:/Users/me/dev"));
 });
 
 test("reports UNC shares with the local host and an encoded path", () => {
-  expect(folderReport("\\\\server\\share\\x", { host: "ZinLaptop", windows: true })).toBe(osc("file://ZinLaptop/%5C%5Cserver%5Cshare%5Cx"));
-  expect(folderReport("\\\\server\\share", { host: "ZinLaptop", windows: true })).toBe(osc("file://ZinLaptop/%5C%5Cserver%5Cshare"));
-  expect(folderReport("\\\\localhost\\C$\\Users\\me", { host: "ZinLaptop", windows: true })).toBe(osc("file://ZinLaptop/%5C%5Clocalhost%5CC%24%5CUsers%5Cme"));
-  expect(folderReport("//localhost/C$/Users/me", { host: "ZinLaptop", windows: true })).toBe(osc("file://ZinLaptop/%5C%5Clocalhost%5CC%24%5CUsers%5Cme"));
-  expect(folderReport("\\\\server\\share\\проект #1%", { host: "ZinLaptop", windows: true })).toBe(osc("file://ZinLaptop/%5C%5Cserver%5Cshare%5C%D0%BF%D1%80%D0%BE%D0%B5%D0%BA%D1%82%20%231%25"));
+  expect(folderReport("\\\\server\\share\\x", { host: "WORKSTATION", windows: true })).toBe(osc("file://WORKSTATION/%5C%5Cserver%5Cshare%5Cx"));
+  expect(folderReport("\\\\server\\share", { host: "WORKSTATION", windows: true })).toBe(osc("file://WORKSTATION/%5C%5Cserver%5Cshare"));
+  expect(folderReport("\\\\localhost\\C$\\Users\\me", { host: "WORKSTATION", windows: true })).toBe(osc("file://WORKSTATION/%5C%5Clocalhost%5CC%24%5CUsers%5Cme"));
+  expect(folderReport("//localhost/C$/Users/me", { host: "WORKSTATION", windows: true })).toBe(osc("file://WORKSTATION/%5C%5Clocalhost%5CC%24%5CUsers%5Cme"));
+  expect(folderReport("\\\\server\\share\\проект #1%", { host: "WORKSTATION", windows: true })).toBe(osc("file://WORKSTATION/%5C%5Cserver%5Cshare%5C%D0%BF%D1%80%D0%BE%D0%B5%D0%BA%D1%82%20%231%25"));
 });
 
 test("identifies the reporting process for delayed listings and replay", () => {
